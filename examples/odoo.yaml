@@ -3,7 +3,7 @@ kind: OdooInstance
 metadata:
   name: my-odoo
 spec:
-  image: docker.bemade.org/bemade/odoo18.0e-bemade:2025-03-16
+  image: docker.bemade.org/bemade/odoo18.0e-bemade:latest
   adminPassword: my-test-password
   filestore:
     storageSize: 2Gi

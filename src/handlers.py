@@ -104,7 +104,7 @@ class OdooHandler:
                     name=f"{self.spec.get('imagePullSecret')}",
                     owner_references=[self.owner_reference],
                 ),
-                type="Obscure",
+                type="kubernetes.io/dockerconfigjson",
                 data=orig_secret.data,
             )
             self._pull_secret = client.CoreV1Api().create_namespaced_secret(
