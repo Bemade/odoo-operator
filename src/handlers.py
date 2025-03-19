@@ -586,7 +586,9 @@ class OdooHandler:
                     raise
         return self._ingress_route_http
 
-    def _create_ingress_route(self, suffix, entrypoint, port, middlewares, tls=True):
+    def _create_ingress_route(
+        self, suffix, entrypoint, port, middlewares, tls=True, match_suffix=""
+    ):
         tls = {"secretName": self.tls_cert.get("metadata").get("name")} if tls else {}
         return client.CustomObjectsApi().create_namespaced_custom_object(
             group="traefik.io",
@@ -605,7 +607,7 @@ class OdooHandler:
                     "routes": [
                         {
                             "kind": "Rule",
-                            "match": f"Host(`{self.spec.get('ingress', {}).get('host')}`)",
+                            "match": f"Host(`{self.spec.get('ingress', {}).get('host')}`) {match_suffix}",
                             "middlewares": middlewares,
                             "services": [
                                 {
@@ -702,4 +704,5 @@ class OdooHandler:
                         "namespace": self.operator_ns,
                     },
                 ],
+                match_suffix=" && PathPrefix(`/websocket`)",
             )
