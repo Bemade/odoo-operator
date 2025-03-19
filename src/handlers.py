@@ -607,7 +607,7 @@ class OdooHandler:
                     "routes": [
                         {
                             "kind": "Rule",
-                            "match": f"Host(`{self.spec.get('ingress', {}).get('host')}`) {match_suffix}",
+                            "match": f"Host(`{self.spec.get('ingress', {}).get('host')}`){match_suffix}",
                             "middlewares": middlewares,
                             "services": [
                                 {
