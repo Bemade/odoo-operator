@@ -326,6 +326,7 @@ class OdooHandler:
     def _init_tls_cert(self):
         if not self.tls_cert:
             hostnames = self.spec.get("ingress").get("hosts")
+            host = hostnames[0]
             apiVersion = "cert-manager.io/v1"
             metadata = client.V1ObjectMeta(
                 name=f"{host}-cert",
