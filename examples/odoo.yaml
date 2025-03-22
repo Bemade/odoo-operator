@@ -3,7 +3,7 @@ kind: OdooInstance
 metadata:
   name: my-odoo
 spec:
-  image: docker.bemade.org/bemade/odoo18.0e-bemade:latest
+  image: docker.bemade.org/bemade/odoo18.0e-bemade-bemade-site:latest
   adminPassword: my-test-password
   filestore:
     storageSize: 2Gi
@@ -12,5 +12,7 @@ spec:
     limit_time_cpu: "0"
     addons_path: "/mnt/extra-addons,/mnt/enterprise-addons"
   ingress:
-    host: test.odoo.bemade.org
+    hosts:
+      - test.odoo.bemade.org
+      - test2.odoo.bemade.org
     issuer: letsencrypt-dns

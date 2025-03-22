@@ -1,5 +1,5 @@
 import kopf
-from handlers import OdooHandler
+from handlers.odoo_handler import OdooHandler
 
 
 @kopf.on.create("bemade.org", "v1", "odooinstances")
