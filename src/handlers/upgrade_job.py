@@ -226,7 +226,7 @@ class UpgradeJob(ResourceHandler):
                             image=image,
                             command=["odoo"],
                             args=[
-                                f"--db_host=$(_HOST)",
+                                f"--db_host=$(HOST)",
                                 f"--db_user=$(USER)",
                                 f"--db_port=$(PORT)",
                                 f"--db_password=$(PASSWORD)",
