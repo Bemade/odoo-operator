@@ -220,6 +220,17 @@ class UpgradeJob(ResourceHandler):
                             ),
                         ),
                     ],
+                    security_context=client.V1PodSecurityContext(
+                        run_as_user=1001,
+                        run_as_group=1001,
+                        fs_group=1001,
+                    ),
+                    affinity=self.spec.get(
+                        "affinity", self.defaults.get("affinity", {})
+                    ),
+                    tolerations=self.spec.get(
+                        "tolerations", self.defaults.get("tolerations", [])
+                    ),
                     containers=[
                         client.V1Container(
                             name=f"odoo-upgrade-{self.name}",
