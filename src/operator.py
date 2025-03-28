@@ -32,8 +32,8 @@ def configure_webhook(settings: kopf.OperatorSettings, **_):
         # Configure webhook server settings
         try:
             settings.admission.server = kopf.WebhookServer(
-                host=webhook_host,
-                port=webhook_port,
+                # host=webhook_host,
+                # port=webhook_port,
                 certfile=webhook_cert_path,
                 pkeyfile=webhook_key_path,
                 cafile=webhook_ca_path,
