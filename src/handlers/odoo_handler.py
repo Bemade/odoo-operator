@@ -95,14 +95,59 @@ class OdooHandler(ResourceHandler):
             handler.handle_delete()
 
     def _is_upgrade_request(self):
-        """Check if the update is an upgrade request."""
+        """Check if the update is an upgrade request that should be executed now."""
         upgrade_spec = self.spec.get("upgrade", {})
         database = upgrade_spec.get("database", "")
         modules = upgrade_spec.get("modules", [])
+        scheduled_time = upgrade_spec.get("time", "")
 
-        return (
+        # Basic validation that this is an upgrade request
+        is_valid_request = (
             upgrade_spec and database and isinstance(modules, list) and len(modules) > 0
         )
+
+        # If it's not a valid request, return False
+        if not is_valid_request:
+            return False
+
+        # If no scheduled time is specified, execute immediately
+        if not scheduled_time:
+            return True
+
+        # If a scheduled time is specified, check if it's time to execute
+        try:
+            # Parse the scheduled time
+            from datetime import datetime
+            import pytz
+
+            # Parse the ISO format time string
+            scheduled_datetime = datetime.fromisoformat(
+                scheduled_time.replace("Z", "+00:00")
+            )
+
+            # Get the current time in UTC
+            current_time = datetime.now(pytz.UTC)
+
+            # If the scheduled time has passed, it's time to execute the upgrade
+            return current_time >= scheduled_datetime
+        except Exception as e:
+            logging.error(f"Error parsing scheduled upgrade time for {self.name}: {e}")
+            # If there's an error parsing the time, default to not upgrading
+            return False
+
+    def check_scheduled_upgrade(self):
+        """
+        Check if this instance has a scheduled upgrade that should be executed now.
+        This method is called periodically by the operator's timer handler.
+        """
+        logging.debug(f"Checking for scheduled upgrades for {self.name}")
+
+        # Check if this is an upgrade request that should be executed now
+        if self._is_upgrade_request():
+            logging.info(f"Executing scheduled upgrade for {self.name}")
+            self._handle_upgrade()
+        else:
+            logging.debug(f"No scheduled upgrade to execute for {self.name}")
 
     def _handle_upgrade(self):
         """Handle the upgrade process."""

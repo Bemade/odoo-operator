@@ -26,7 +26,11 @@ def delete_fn(body, **kwargs):
 def check_upgrade_job_completion(name, namespace, labels, **kwargs):
     """Check if an upgrade job has completed and delegate to OdooHandler for post-completion tasks."""
     # Only process jobs with the upgrade-job label and app-instance label
-    if "type" not in labels or labels["type"] != "upgrade-job" or "app-instance" not in labels:
+    if (
+        "type" not in labels
+        or labels["type"] != "upgrade-job"
+        or "app-instance" not in labels
+    ):
         return
 
     # Create an OdooHandler instance from the job info
@@ -35,3 +39,10 @@ def check_upgrade_job_completion(name, namespace, labels, **kwargs):
     # If we got a valid handler, delegate the job check to it
     if handler:
         handler.handle_upgrade_job_check()
+
+
+@kopf.timer("bemade.org", "v1", "odooinstances", interval=60.0)
+def check_scheduled_upgrades(body, **kwargs):
+    """Check if any OdooInstances have scheduled upgrades that need to be executed."""
+    handler = OdooHandler(body, **kwargs)
+    handler.check_scheduled_upgrade()
