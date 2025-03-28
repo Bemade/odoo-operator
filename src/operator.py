@@ -33,7 +33,7 @@ def configure_webhook(settings: kopf.OperatorSettings, **_):
             host=webhook_host,
             port=webhook_port,
             certfile=webhook_cert_path,
-            keyfile=webhook_key_path,
+            pkeyfile=webhook_key_path,
         )
     else:
         logger.warning(
