@@ -13,7 +13,7 @@ webhook_host = os.getenv("WEBHOOK_HOST", "0.0.0.0")
 webhook_port = 443
 webhook_cert_path = "/etc/webhook/tls.crt"
 webhook_key_path = "/etc/webhook/tls.key"
-webhook_ca_path = "/etc/webhook-ca/ca.crt"  # Path to the CA certificate
+webhook_ca_path = "/etc/webhook/ca.crt"
 
 
 @kopf.on.startup()
