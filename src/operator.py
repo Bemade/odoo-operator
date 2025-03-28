@@ -48,7 +48,7 @@ def configure_webhook(settings: kopf.OperatorSettings, **_):
 
             # Set managed to a name for the webhook configuration
             # This tells Kopf to create and manage the webhook configuration
-            settings.admission.managed = "odoo-operator-webhooks"
+            settings.admission.managed = "auto.kopf.dev"
 
             logger.info("Webhook server configured successfully")
 
