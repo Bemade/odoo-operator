@@ -37,8 +37,6 @@ def configure_webhook(settings: kopf.OperatorSettings, **_):
                 pkeyfile=webhook_key_path,
                 cafile=webhook_ca_path,
             )
-            settings.admission.service = webhook_host
-            settings.admission.managed = "auto.kopf.dev"
 
             logger.info("Webhook server configured successfully")
 
