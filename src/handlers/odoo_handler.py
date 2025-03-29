@@ -197,13 +197,17 @@ class OdooHandler(ResourceHandler):
     def _check_upgrade_job_completion(self):
         """Check if the upgrade job has completed and handle completion tasks."""
         # Skip if there's no upgrade job at all
-        if not self.upgrade_job.resource or self.upgrade_job.is_completed:
+        if not self.upgrade_job.resource:
             return
             
         logging.debug(f"Checking upgrade job completion for {self.name}")
 
         try:
-            self.upgrade_job.handle_completion()
+            # Check if the job is completed and handle completion if it is
+            # The handle_completion method will check is_completed internally
+            # and return False if not completed
+            if self.upgrade_job.handle_completion():
+                logging.info(f"Upgrade job for {self.name} has been completed and processed")
         except Exception as e:
             logging.error(f"Error in upgrade job completion check for {self.name}: {e}")
             return
