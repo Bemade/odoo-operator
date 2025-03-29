@@ -2,7 +2,7 @@ from kubernetes import client
 import logging
 from .resource_handler import ResourceHandler, update_if_exists, create_if_missing
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class UpgradeJob(ResourceHandler):
@@ -154,7 +154,7 @@ class UpgradeJob(ResourceHandler):
             and (
                 not self.upgrade_spec.get("time")
                 or datetime.fromisoformat(self.upgrade_spec.get("time"))
-                < datetime.now()
+                < datetime.now(tz=timezone.utc)
             )
         ):
             return False
