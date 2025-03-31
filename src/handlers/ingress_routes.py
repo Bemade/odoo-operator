@@ -109,27 +109,6 @@ class IngressRouteBase(ResourceHandler):
         raise NotImplementedError()
 
 
-class IngressRouteHTTP(IngressRouteBase):
-    """Manages the HTTP IngressRoute for Odoo."""
-
-    def _get_route_config(self):
-        return {
-            "suffix": "http",
-            "entrypoint": "web",
-            "port": 8069,
-            "middlewares": [
-                {
-                    "name": "redirect-https",
-                    "namespace": self.operator_ns,
-                },
-            ],
-            "tls": False,
-        }
-
-    def _get_route_name(self):
-        return f"{self.name}-http"
-
-
 class IngressRouteHTTPS(IngressRouteBase):
     """Manages the HTTPS IngressRoute for Odoo."""
 
