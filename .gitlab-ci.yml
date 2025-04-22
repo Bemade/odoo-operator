@@ -1,13 +1,17 @@
-image: docker:latest
-
 variables:
   VERSION: 0.3.5
 
-services:
-  - docker:dind
-
 stages:
   - build
+
+build:
+  stage: build
+  tags: [kubernetes]
+  image: docker:20.10.16
+  services:
+    - name: docker:20.10.16-dind
+      alias: docker
+      command: ["--tls=false"]
 
 # This before_script section will be used by all jobs
 before_script:
@@ -42,4 +46,6 @@ build_amd64:
   tags:
     - docker
   script:
-    - docker buildx build --platform linux/amd64 -t docker.bemade.org/bemade/odoo-operator:$VERSION -t docker.bemade.org/bemade/odoo-operator:latest --push .
+    - docker build -t docker.bemade.org/bemade/odoo-operator:$VERSION -t docker.bemade.org/bemade/odoo-operator:latest .
+    - docker push docker.bemade.org/bemade/odoo-operator:latest
+    - docker push docker.bemade.org/bemade/odoo-operator:$VERSION
