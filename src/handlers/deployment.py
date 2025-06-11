@@ -116,9 +116,10 @@ class Deployment(ResourceHandler):
 
         # Add Git repository volume mount if configured
         if self.spec.get("gitProject"):
+            # Mount the entire git repo to /mnt/repo
             volume_mounts.append(
                 client.V1VolumeMount(
-                    name="repo-volume", mount_path="/mnt/addons", sub_path="repo"
+                    name="repo-volume", mount_path="/mnt/repo"
                 )
             )
 
