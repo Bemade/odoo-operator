@@ -99,6 +99,7 @@ def validate(body, old, new, **kwargs):
     if not new:
         return
 
+    new_spec = new.get("spec", {})
     upgrade_spec = new_spec.get("upgrade", {})
     database = upgrade_spec.get("database", "")
     modules = upgrade_spec.get("modules", [])
