@@ -41,13 +41,17 @@ class GitSyncHandler(ResourceHandler):
         self._resource = job
 
     def _get_owner_reference(self):
-        odoo_instance = client.CustomObjectsApi().get_namespaced_custom_object(
-            group="bemade.org",
-            version="v1",
-            namespace=self.namespace,
-            plural="odooinstances",
-            name=self.spec.get("odooInstance"),
-        )
+        try:
+            odoo_instance = client.CustomObjectsApi().get_namespaced_custom_object(
+                group="bemade.org",
+                version="v1",
+                namespace=self.namespace,
+                plural="odooinstances",
+                name=self.spec.get("odooInstance"),
+            )
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                return
         return client.V1OwnerReference(
             api_version="bemade.org/v1",
             kind="OdooInstance",
