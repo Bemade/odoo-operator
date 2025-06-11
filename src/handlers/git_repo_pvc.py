@@ -14,7 +14,6 @@ class GitRepoPVC(PVCHandler):
             handler=handler,
             pvc_name_suffix="repo-pvc",
             default_size="1Gi",
-            default_storage_class="longhorn",
         )
 
     def _get_storage_spec(self):
@@ -53,11 +52,13 @@ class GitRepoPVC(PVCHandler):
         """Initialize Git sync if configured."""
         git_project = self.spec.get("gitProject")
         if not git_project:
+            logging.info(f"No gitProject configured for {self.name}")
             return
 
         try:
             # Import here to avoid circular import
             from .git_sync_handler import GitSyncHandler
+
             # Create GitSync using the parent's body - GitSyncHandler expects the full CR
             git_sync_body = {
                 "apiVersion": "odoo.bemade.org/v1",
@@ -86,8 +87,9 @@ class GitRepoPVC(PVCHandler):
                 },
             }
 
+            logging.info(f"Initializing Git sync for {self.name}")
             # Initialize and create the GitSync resource
-            GitSyncHandler(git_sync_body).on_create()
+            GitSyncHandler(git_sync_body).handle_create()
         except Exception as e:
             logging.error(f"Failed to initialize Git sync: {e}")
             raise
