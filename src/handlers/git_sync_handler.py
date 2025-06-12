@@ -64,8 +64,9 @@ class GitSyncHandler(ResourceHandler):
     @create_if_missing
     def handle_update(self):
         """Update a job to sync the Git repository."""
-        if self.resource.status.succeeded or self.resource.status.failed:
-            logger.debug(f"GitSync Job completed with status: {self.resource.status}")
+        status = self.resource.get("status", {})
+        if status.get("succeeded") or status.get("failed"):
+            logger.debug(f"GitSync Job completed with status: {status}")
             self.handle_completion()
 
     def _create_sync_job(self) -> client.V1Job:
