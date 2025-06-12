@@ -31,6 +31,7 @@ class GitSyncHandler(ResourceHandler):
             self.namespace = None
             self.name = None
             self.uid = None
+        self._resource = None
         self.operator_ns = os.environ.get("OPERATOR_NAMESPACE")
         # Load defaults if available
         try:
