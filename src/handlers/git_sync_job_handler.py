@@ -23,26 +23,18 @@ class GitSyncJobHandler(ResourceHandler):
     def handle_update(self):
         job: client.V1Job = self.resource
         status = job.status
-        succeeded = status.succeeded
-        failed = status.failed
+        succeeded = status.succeeded and status.succeeded > 0
+        failed = status.failed and status.failed > 0
         if succeeded or failed:
             owner_refs = job.metadata.owner_references
             for ref in owner_refs:
-                if ref.kind == "GitSync":
-                    git_sync_name = ref.name
-                    git_sync = client.CustomObjectsApi().get_namespaced_custom_object(
-                        group="bemade.org",
-                        version="v1",
-                        namespace=self.namespace,
-                        plural="gitsyncs",
-                        name=git_sync_name,
-                    )
+                if ref.kind.lower() == "gitsync":
                     client.CustomObjectsApi().patch_namespaced_custom_object(
                         group="bemade.org",
                         version="v1",
                         namespace=self.namespace,
                         plural="gitsyncs",
-                        name=git_sync_name,
+                        name=ref.name,
                         body={
                             "status": {
                                 "succeeded": bool(succeeded),
