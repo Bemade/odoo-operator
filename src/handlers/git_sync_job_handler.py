@@ -22,7 +22,10 @@ class GitSyncJobHandler(ResourceHandler):
 
     def handle_update(self):
         job: client.V1Job = self.resource
-        if job.status.succeeded or job.status.failed:
+        status = job.get("status", {})
+        succeeded = status.get("succeeded", False)
+        failed = status.get("failed", False)
+        if succeeded or failed:
             owner_refs = job.metadata.owner_references
             for ref in owner_refs:
                 if ref.kind == "GitSync":
@@ -34,17 +37,18 @@ class GitSyncJobHandler(ResourceHandler):
                         plural="gitsyncs",
                         name=git_sync_name,
                     )
-                    if job.status.succeeded:
-                        git_sync.status.succeeded = job.status.succeeded
-                    if job.status.failed:
-                        git_sync.status.failed = job.status.failed
                     client.CustomObjectsApi().patch_namespaced_custom_object(
                         group="bemade.org",
                         version="v1",
                         namespace=self.namespace,
                         plural="gitsyncs",
                         name=git_sync_name,
-                        body=git_sync,
+                        body={
+                            "status": {
+                                "succeeded": succeeded,
+                                "failed": failed,
+                            }
+                        },
                     )
                     return
             raise kopf.AdmissionError("GitSync not found")

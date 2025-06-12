@@ -234,18 +234,12 @@ echo "Git sync completed successfully"
                 now = datetime.now(tz=timezone.utc)
                 timestamp = now.strftime("%Y%m%d-%H%M%S")
 
-                # Determine job success status
-                job_succeeded = False
-                if hasattr(self._resource, "status") and hasattr(
-                    self._resource.status, "succeeded"
-                ):
-                    job_succeeded = self._resource.status.succeeded > 0
-
-                status_value = "succeeded" if job_succeeded else "failed"
-
                 logger.info(
                     f"Restarting deployment {deployment.name} after Git sync completion (status: {status_value})"
                 )
+                status = self.resource.get("status")
+                succeeded, failed = status.get("succeeded"), status.get("failed")
+                success_label = "succeeded" if succeeded or not failed else "failed"
 
                 # Method 1: Use a strategic merge patch to update annotations on the pod template
                 # This is equivalent to kubectl rollout restart
@@ -255,11 +249,11 @@ echo "Git sync completed successfully"
                             "metadata": {
                                 "annotations": {
                                     "bemade.org/git-sync-timestamp": timestamp,
-                                    "bemade.org/git-sync-status": status_value,
+                                    "bemade.org/git-sync-status": success_label,
                                 },
                                 "labels": {
                                     "bemade.org/last_sync": timestamp,
-                                    "bemade.org/last_sync_status": status_value,
+                                    "bemade.org/git-sync-status": success_label,
                                 },
                             }
                         }
@@ -267,7 +261,7 @@ echo "Git sync completed successfully"
                     "metadata": {
                         "labels": {
                             "bemade.org/last_sync": timestamp,
-                            "bemade.org/last_sync_status": status_value,
+                            "bemade.org/git-sync-status": success_label,
                         }
                     },
                 }
