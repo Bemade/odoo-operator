@@ -217,78 +217,72 @@ echo "Git sync completed successfully"
 
         This includes redeploying the OdooInstance to pick up the new code.
         """
-        try:
-            logger.info("Handling completion for Git sync job")
-            # Find the deployment through OdooHandler
-            try:
-                deployment = self.odoo_handler.deployment
+        logger.info("Handling completion for Git sync job")
+        # Find the deployment through OdooHandler
+        deployment = self.odoo_handler.deployment
 
-                if not deployment or not hasattr(deployment, "resource"):
-                    logger.error("Deployment not found or deployment.resource is None")
-                    return
+        if not deployment or not hasattr(deployment, "resource"):
+            logger.error("Deployment not found or deployment.resource is None")
+            return
 
-                # Ensure labels dict exists
-                if (
-                    not hasattr(deployment.resource.metadata, "labels")
-                    or deployment.resource.metadata.labels is None
-                ):
-                    deployment.resource.metadata.labels = {}
+        # Ensure labels dict exists
+        if (
+            not hasattr(deployment.resource.metadata, "labels")
+            or deployment.resource.metadata.labels is None
+        ):
+            deployment.resource.metadata.labels = {}
 
-                # Get timestamp in a format valid for labels
-                now = datetime.now(tz=timezone.utc)
-                timestamp = now.strftime("%Y%m%d-%H%M%S")
+        # Get timestamp in a format valid for labels
+        now = datetime.now(tz=timezone.utc)
+        timestamp = now.strftime("%Y%m%d-%H%M%S")
 
-                status = self.resource.get("status")
-                succeeded, failed = status.get("succeeded"), status.get("failed")
-                success_label = "succeeded" if succeeded or not failed else "failed"
-                logger.info(
-                    f"Restarting deployment {deployment.name} after Git sync completion (status: {success_label})"
-                )
+        status = self.resource.get("status")
+        succeeded, failed = status.get("succeeded"), status.get("failed")
+        success_label = "succeeded" if succeeded or not failed else "failed"
+        logger.info(
+            f"Restarting deployment {deployment.name} after Git sync completion (status: {success_label})"
+        )
 
-                # Method 1: Use a strategic merge patch to update annotations on the pod template
-                # This is equivalent to kubectl rollout restart
-                restart_patch = {
-                    "spec": {
-                        "template": {
-                            "metadata": {
-                                "annotations": {
-                                    "bemade.org/git-sync-timestamp": timestamp,
-                                    "bemade.org/git-sync-status": success_label,
-                                },
-                                "labels": {
-                                    "bemade.org/last_sync": timestamp,
-                                    "bemade.org/git-sync-status": success_label,
-                                },
-                            }
-                        }
-                    },
+        # Method 1: Use a strategic merge patch to update annotations on the pod template
+        # This is equivalent to kubectl rollout restart
+        restart_patch = {
+            "spec": {
+                "template": {
                     "metadata": {
+                        "annotations": {
+                            "bemade.org/git-sync-timestamp": timestamp,
+                            "bemade.org/git-sync-status": success_label,
+                        },
                         "labels": {
                             "bemade.org/last_sync": timestamp,
                             "bemade.org/git-sync-status": success_label,
-                        }
-                    },
+                        },
+                    }
                 }
+            },
+            "metadata": {
+                "labels": {
+                    "bemade.org/last_sync": timestamp,
+                    "bemade.org/git-sync-status": success_label,
+                }
+            },
+        }
 
-                # Patch the deployment to trigger a restart
-                client.AppsV1Api().patch_namespaced_deployment(
-                    name=deployment.name,
-                    namespace=deployment.namespace,
-                    body=restart_patch,
-                )
-                client.CustomObjectsApi().delete_namespaced_custom_object(
-                    group="bemade.org",
-                    version="v1",
-                    namespace=self.namespace,
-                    plural="gitsyncs",
-                    name=self.name,
-                )
+        # Patch the deployment to trigger a restart
+        client.AppsV1Api().patch_namespaced_deployment(
+            name=deployment.name,
+            namespace=deployment.namespace,
+            body=restart_patch,
+            pretty=True,
+            force=True,
+            content_type="application/strategic-merge-patch+json",
+        )
+        client.CustomObjectsApi().delete_namespaced_custom_object(
+            group="bemade.org",
+            version="v1",
+            namespace=self.namespace,
+            plural="gitsyncs",
+            name=self.name,
+        )
 
-                logger.info(
-                    f"Successfully patched deployment {deployment.name} after Git sync"
-                )
-            except Exception as e:
-                logger.error(f"Error getting deployment: {str(e)}")
-        except Exception as e:
-            logger.error(f"Error in handle_completion: {str(e)}")
-            raise e
+        logger.info(f"Successfully patched deployment {deployment.name} after Git sync")
