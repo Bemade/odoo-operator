@@ -238,12 +238,12 @@ echo "Git sync completed successfully"
                 now = datetime.now(tz=timezone.utc)
                 timestamp = now.strftime("%Y%m%d-%H%M%S")
 
-                logger.info(
-                    f"Restarting deployment {deployment.name} after Git sync completion (status: {status_value})"
-                )
                 status = self.resource.get("status")
                 succeeded, failed = status.get("succeeded"), status.get("failed")
                 success_label = "succeeded" if succeeded or not failed else "failed"
+                logger.info(
+                    f"Restarting deployment {deployment.name} after Git sync completion (status: {success_label})"
+                )
 
                 # Method 1: Use a strategic merge patch to update annotations on the pod template
                 # This is equivalent to kubectl rollout restart
