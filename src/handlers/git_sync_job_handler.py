@@ -9,6 +9,7 @@ class GitSyncJobHandler(ResourceHandler):
         self.spec = body.get("spec", {})
         self.meta = body.get("meta", body.get("metadata"))
         self.namespace = self.meta.get("namespace")
+        self.name = self.meta.get("name")
         self.uid = self.meta.get("uid")
         self.owner_references = self.meta.get("ownerReferences", [])
         self._resource = None
