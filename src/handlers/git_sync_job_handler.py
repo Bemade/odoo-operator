@@ -22,7 +22,7 @@ class GitSyncJobHandler(ResourceHandler):
 
     def handle_update(self):
         job: client.V1Job = self.resource
-        status = job.get("status", {})
+        status = job.status
         succeeded = status.get("succeeded", False)
         failed = status.get("failed", False)
         if succeeded or failed:
