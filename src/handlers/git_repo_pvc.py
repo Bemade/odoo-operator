@@ -19,12 +19,20 @@ class GitRepoPVC(PVCHandler):
     def _get_storage_spec(self):
         """Get the storage specification from the CRD."""
         git_project = self.spec.get("gitProject", {})
-        storage_spec = git_project.get("storage", {})
         spec = {}
-        if storage_spec.get("class"):
-            spec["storage_class_name"] = spec.get("class")
-        spec["resources"] = client.V1ResourceRequirements(
-            requests={"storage": storage_spec.get("size", self.default_size)}
+
+        # Get storage class if specified
+        storage_class = git_project.get("storageClass")
+        if storage_class:
+            spec["storage_class_name"] = storage_class
+
+        # Get size (with default from constructor)
+        size = git_project.get("size", self.default_size)
+
+        spec["resources"] = client.V1ResourceRequirements(requests={"storage": size})
+
+        logging.info(
+            f"Using Git repo PVC spec: size={size}, storageClass={storage_class}"
         )
         return spec
 
@@ -89,7 +97,7 @@ class GitRepoPVC(PVCHandler):
             }
 
             logging.info(f"Initializing Git sync for {self.name}")
-            
+
             # Use the custom objects API directly to create the GitSync resource
             api = client.CustomObjectsApi()
             try:
@@ -98,12 +106,14 @@ class GitRepoPVC(PVCHandler):
                     version="v1",
                     namespace=self.namespace,
                     plural="gitsyncs",
-                    body=git_sync_body
+                    body=git_sync_body,
                 )
                 logging.info(f"Successfully created GitSync resource for {self.name}")
             except client.exceptions.ApiException as e:
                 if e.status == 409:  # Conflict - resource already exists
-                    logging.info(f"GitSync resource for {self.name} already exists, skipping creation")
+                    logging.info(
+                        f"GitSync resource for {self.name} already exists, skipping creation"
+                    )
                 else:
                     logging.error(f"Failed to create GitSync resource: {e}")
                     raise
