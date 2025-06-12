@@ -242,40 +242,28 @@ echo "Git sync completed successfully"
         logger.info(
             f"Restarting deployment {deployment.name} after Git sync completion (status: {success_label})"
         )
-
-        # Method 1: Use a strategic merge patch to update annotations on the pod template
-        # This is equivalent to kubectl rollout restart
-        restart_patch = {
+        stop_patch = {
             "spec": {
-                "template": {
-                    "metadata": {
-                        "annotations": {
-                            "bemade.org/git-sync-timestamp": timestamp,
-                            "bemade.org/git-sync-status": success_label,
-                        },
-                        "labels": {
-                            "bemade.org/last_sync": timestamp,
-                            "bemade.org/git-sync-status": success_label,
-                        },
-                    }
-                }
-            },
-            "metadata": {
-                "labels": {
-                    "bemade.org/last_sync": timestamp,
-                    "bemade.org/git-sync-status": success_label,
-                }
-            },
+                "replicas": 0,
+            }
+        }
+        start_patch = {
+            "spec": {
+                "replicas": 1,
+            }
         }
 
         # Patch the deployment to trigger a restart
         client.AppsV1Api().patch_namespaced_deployment(
             name=deployment.name,
             namespace=deployment.namespace,
-            body=restart_patch,
-            pretty=True,
-            force=True,
-            content_type="application/strategic-merge-patch+json",
+            body=stop_patch,
+        )
+        time.sleep(5)
+        client.AppsV1Api().patch_namespaced_deployment(
+            name=deployment.name,
+            namespace=deployment.namespace,
+            body=start_patch,
         )
         client.CustomObjectsApi().delete_namespaced_custom_object(
             group="bemade.org",
