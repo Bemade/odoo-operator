@@ -133,6 +133,15 @@ def update_gitsync_fn(body, **kwargs):
     handler.handle_update()
 
 
+@kopf.on.field("bemade.org", "v1", "gitsyncs", field="status.succeeded")
+@kopf.on.field("bemade.org", "v1", "gitsyncs", field="status.failed")
+def on_gitsync_status_change(body, **kwargs):
+    """Handle GitSync status change and trigger Odoo deployment update."""
+    handler = GitSyncHandler(body=body, **kwargs)
+    logger.debug(f"GitSync status changed: {body}")
+    handler.handle_update()
+
+
 @kopf.on.delete("bemade.org", "v1", "gitsyncs")
 def delete_gitsync_fn(body, **kwargs):
     handler = GitSyncHandler(body, **kwargs)
@@ -158,7 +167,7 @@ def _is_gitsync_job(body, **kwargs):
 @kopf.on.field("batch", "v1", "jobs", when=_is_gitsync_job, field="status.succeeded")
 @kopf.on.field("batch", "v1", "jobs", when=_is_gitsync_job, field="status.failed")
 def on_job_status_change(body, **kwargs):
-    """Handle GitSync job completion and trigger Odoo deployment update."""
+    """Handle GitSync job completion and update GitSync status."""
     handler = GitSyncJobHandler(body=body, **kwargs)
     logger.debug(f"GitSync job status changed: {body}")
     handler.handle_update()
