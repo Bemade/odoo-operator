@@ -11,6 +11,7 @@ class GitSyncJobHandler(ResourceHandler):
         self.namespace = self.meta.get("namespace")
         self.uid = self.meta.get("uid")
         self.owner_references = self.meta.get("ownerReferences", [])
+        self._resource = None
 
     def _read_resource(self):
         return client.BatchV1Api.read_namespaced_job(
