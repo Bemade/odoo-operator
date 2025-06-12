@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 from kubernetes import client
-from .resource_handler import ResourceHandler, update_if_exists
+from .resource_handler import ResourceHandler, update_if_exists, create_if_missing
 from datetime import datetime, timezone
 from .odoo_handler import OdooHandler
 import os
