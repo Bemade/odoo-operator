@@ -56,12 +56,11 @@ class GitSyncHandler(ResourceHandler):
         )
         return OdooHandler(body=body)
 
-    @update_if_exists
     def handle_create(self):
         """Create a job to sync the Git repository."""
+        logger.debug(f"Handling creation for git sync: {self.body}")
         self._resource = self._create_sync_job()
 
-    @create_if_missing
     def handle_update(self):
         """Update a job to sync the Git repository."""
         status = self.resource.get("status", {})
