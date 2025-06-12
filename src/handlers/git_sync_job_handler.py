@@ -45,8 +45,8 @@ class GitSyncJobHandler(ResourceHandler):
                         name=git_sync_name,
                         body={
                             "status": {
-                                "succeeded": succeeded,
-                                "failed": failed,
+                                "succeeded": bool(succeeded),
+                                "failed": bool(failed),
                             }
                         },
                     )
