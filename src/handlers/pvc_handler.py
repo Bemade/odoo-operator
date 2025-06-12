@@ -92,17 +92,3 @@ class PVCHandler(ResourceHandler):
                     body=self._resource,
                 )
             )
-
-    @property
-    def resource(self):
-        """Get the current PVC resource, fetching it if needed."""
-        if not self._resource:
-            try:
-                self._resource = self._read_resource()
-            except client.exceptions.ApiException as e:
-                if e.status == 404:
-                    # Resource not found, that's fine
-                    pass
-                else:
-                    raise
-        return self._resource

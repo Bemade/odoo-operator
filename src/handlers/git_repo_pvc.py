@@ -27,7 +27,7 @@ class GitRepoPVC(PVCHandler):
             spec["storage_class_name"] = storage_class
 
         # Get size (with default from constructor)
-        size = git_project.get("size", self.default_size)
+        size = git_project.get("size") or self.default_size
 
         spec["resources"] = client.V1ResourceRequirements(requests={"storage": size})
 
