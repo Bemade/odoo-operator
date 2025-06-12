@@ -5,6 +5,6 @@ metadata:
   name: "git-sync-test"
 spec:
   odooInstance: odoo
-  repository: "git@git.bemade.org:bemade/bemade-site"
+  repository: "git@git.bemade.org:maisonpleincoeur/odoo-18-ee"
   branch: "18.0"
   sshSecret: "ssh-key"

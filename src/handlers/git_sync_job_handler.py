@@ -23,8 +23,8 @@ class GitSyncJobHandler(ResourceHandler):
     def handle_update(self):
         job: client.V1Job = self.resource
         status = job.status
-        succeeded = status.get("succeeded", False)
-        failed = status.get("failed", False)
+        succeeded = status.succeeded
+        failed = status.failed
         if succeeded or failed:
             owner_refs = job.metadata.owner_references
             for ref in owner_refs:
