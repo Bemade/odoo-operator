@@ -86,7 +86,9 @@ class GitSyncHandler(ResourceHandler):
     @create_if_missing
     def handle_update(self):
         """Update a job to sync the Git repository."""
+        logger.debug(f"In handle_update for GitSync Job")
         if self.resource.status.succeeded or self.resource.status.failed:
+            logger.debug(f"GitSync Job completed with status: {self.resource.status}")
             self.handle_completion()
 
     def _create_sync_job(self) -> client.V1Job:
@@ -223,13 +225,8 @@ echo "Git sync completed successfully"
         """
         try:
             logging.info("Handling completion for Git sync job")
-            # Get the job resource if not already available
-            if not hasattr(self, "_resource") or self._resource is None:
-                self._resource = self._read_resource()
-
             # Find the deployment through OdooHandler
             try:
-                # Access odoo_handler as property as in original code
                 deployment = self.odoo_handler.deployment
 
                 if not deployment or not hasattr(deployment, "resource"):

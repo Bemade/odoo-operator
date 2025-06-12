@@ -157,4 +157,5 @@ def _is_gitsync_job(body, **kwargs):
 def on_job_status_change(body, old, new, **kwargs):
     """Handle GitSync job completion and trigger Odoo deployment update."""
     handler = GitSyncHandler(body, **kwargs)
+    logger.debug(f"GitSync job status changed: {body}")
     handler.handle_update()
