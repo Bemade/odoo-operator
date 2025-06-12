@@ -7,6 +7,8 @@ from .odoo_handler import OdooHandler
 import os
 import yaml
 
+logger = logging.getLogger(__name__)
+
 
 class GitSyncHandler(ResourceHandler):
     """Simple handler for GitSync resources that launches a sync job.
@@ -67,7 +69,7 @@ class GitSyncHandler(ResourceHandler):
             odoo_instance_name = self.spec.get("odooInstance")
 
         if not odoo_instance_name:
-            logging.warning(
+            logger.warning(
                 f"Unable to determine OdooInstance name for {self.namespace}/{self.name}"
             )
             return None
@@ -166,7 +168,7 @@ class GitSyncHandler(ResourceHandler):
         job = client.BatchV1Api().create_namespaced_job(
             namespace=self.namespace, body=job
         )
-        logging.info(f"Created Git sync job: {self.name}")
+        logger.info(f"Created Git sync job: {self.name}")
 
         return job
 
@@ -251,13 +253,13 @@ echo "Git sync completed successfully"
         This includes redeploying the OdooInstance to pick up the new code.
         """
         try:
-            logging.info("Handling completion for Git sync job")
+            logger.info("Handling completion for Git sync job")
             # Find the deployment through OdooHandler
             try:
                 deployment = self.odoo_handler.deployment
 
                 if not deployment or not hasattr(deployment, "resource"):
-                    logging.error("Deployment not found or deployment.resource is None")
+                    logger.error("Deployment not found or deployment.resource is None")
                     return
 
                 # Ensure labels dict exists
@@ -283,7 +285,7 @@ echo "Git sync completed successfully"
                     "succeeded" if job_succeeded else "failed"
                 )
 
-                logging.info(
+                logger.info(
                     f"Patching deployment {deployment.name} after Git sync completion (status: {job_succeeded})"
                 )
 
@@ -294,11 +296,11 @@ echo "Git sync completed successfully"
                     body=deployment.resource,
                 )
 
-                logging.info(
+                logger.info(
                     f"Successfully patched deployment {deployment.name} after Git sync"
                 )
             except Exception as e:
-                logging.error(f"Error getting deployment: {str(e)}")
+                logger.error(f"Error getting deployment: {str(e)}")
         except Exception as e:
-            logging.error(f"Error in handle_completion: {str(e)}")
+            logger.error(f"Error in handle_completion: {str(e)}")
             raise e
