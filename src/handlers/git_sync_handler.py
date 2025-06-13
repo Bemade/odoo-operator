@@ -214,6 +214,11 @@ class GitSyncHandler(ResourceHandler):
             spec=client.V1JobSpec(
                 template=client.V1PodTemplateSpec(
                     spec=client.V1PodSpec(
+                        security_context=client.V1PodSecurityContext(
+                            run_as_user=100,
+                            run_as_group=101,
+                            fs_group=101,
+                        ),
                         containers=[self._get_git_sync_container()],
                         restart_policy="Never",
                         volumes=volumes,
