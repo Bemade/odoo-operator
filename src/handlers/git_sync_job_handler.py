@@ -61,7 +61,7 @@ class GitSyncJobHandler(ResourceHandler):
 
         # Generate a timestamp for the job name to ensure uniqueness
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        job_name = f"{self.name}-{timestamp}"
+        job_name = f"{self.name}-git-sync-{timestamp}"
 
         # Prepare volumes for the pod
         volumes = [
