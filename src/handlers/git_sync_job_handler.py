@@ -219,7 +219,7 @@ echo "Git sync completed successfully"
             return
 
         # Check if completed
-        if not hasattr(job_status, "completion_time"):
+        if not hasattr(job_status, "completion_time") or not job_status.completion_time:
             logger.debug(f"Job {job.metadata.name} not completed yet, doing nothing.")
             return
 
