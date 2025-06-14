@@ -265,4 +265,4 @@ echo "Git sync completed successfully"
     @property
     def is_running(self):
         status = self.resource and self.resource.status
-        return status and (status.succeeded or status.failed)
+        return not status or (not status.succeeded and not status.failed)
