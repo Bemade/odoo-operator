@@ -88,10 +88,13 @@ class GitRepoPVC(PVCHandler):
             # Get the current OdooInstance resource
             api = client.CustomObjectsApi()
             try:
-
-                # Update the spec to enable sync
-                spec = self.handler.spec.get("sync", {})
-                spec["enabled"] = True
+                sync_spec = {
+                    "spec": {
+                        "sync": {
+                            "enabled": True,
+                        }
+                    }
+                }
 
                 # Patch the OdooInstance to enable sync
                 api.patch_namespaced_custom_object(
@@ -100,7 +103,7 @@ class GitRepoPVC(PVCHandler):
                     namespace=self.namespace,
                     plural="odooinstances",
                     name=self.handler.name,
-                    body={"spec": spec},
+                    body=sync_spec,
                 )
                 logging.info(
                     f"Enabled sync on OdooInstance {self.name} for initial git repo setup"
