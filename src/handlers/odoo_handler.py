@@ -203,7 +203,10 @@ class OdooHandler(ResourceHandler):
 
         # If a sync job is running, defer the upgrade until the sync is complete
         # Check if there's an active sync job
-        if self.git_sync_job_handler.resource and not self.git_sync_job_handler.is_completed:
+        if (
+            self.git_sync_job_handler.resource
+            and not self.git_sync_job_handler.is_completed
+        ):
             logging.info(
                 f"Git sync job for {self.name} is running, deferring upgrade until sync completes"
             )
@@ -296,8 +299,7 @@ class OdooHandler(ResourceHandler):
         try:
             api = client.AppsV1Api()
             deployment = api.read_namespaced_deployment(
-                name=self.name,
-                namespace=self.namespace
+                name=self.name, namespace=self.namespace
             )
 
             # Store the current replica count for later restoration
@@ -310,21 +312,13 @@ class OdooHandler(ResourceHandler):
                 namespace=self.namespace,
                 plural="odooinstances",
                 name=self.name,
-                body={
-                    "status": {
-                        "syncStatus": {
-                            "previousReplicas": current_replicas
-                        }
-                    }
-                }
+                body={"status": {"syncStatus": {"previousReplicas": current_replicas}}},
             )
 
             # Scale down to 0
             deployment.spec.replicas = 0
             api.replace_namespaced_deployment(
-                name=self.name,
-                namespace=self.namespace,
-                body=deployment
+                name=self.name, namespace=self.namespace, body=deployment
             )
             logging.info(f"Scaled down deployment {self.name} to 0 replicas")
 
@@ -386,27 +380,27 @@ class OdooHandler(ResourceHandler):
         try:
             # Get the previous replica count from status
             odoo_instance = kopf.get_by_name(
-                "bemade.org", "v1", "odooinstances",
-                self.name, namespace=self.namespace
+                "bemade.org", "v1", "odooinstances", self.name, namespace=self.namespace
             )
 
-            sync_status = odoo_instance.get('status', {}).get('syncStatus', {})
-            previous_replicas = sync_status.get('previousReplicas', 1)  # Default to 1 if not found
+            sync_status = odoo_instance.get("status", {}).get("syncStatus", {})
+            previous_replicas = sync_status.get(
+                "previousReplicas", 1
+            )  # Default to 1 if not found
 
             # Use the deployment handler to scale back up
             api = client.AppsV1Api()
             deployment = api.read_namespaced_deployment(
-                name=self.name,
-                namespace=self.namespace
+                name=self.name, namespace=self.namespace
             )
 
             deployment.spec.replicas = previous_replicas
             api.replace_namespaced_deployment(
-                name=self.name,
-                namespace=self.namespace,
-                body=deployment
+                name=self.name, namespace=self.namespace, body=deployment
             )
-            logging.info(f"Scaled up deployment {self.name} to {previous_replicas} replicas")
+            logging.info(
+                f"Scaled up deployment {self.name} to {previous_replicas} replicas"
+            )
 
             # Reset the sync.enabled flag to false since sync is completed
             client.CustomObjectsApi().patch_namespaced_custom_object_status(
@@ -419,10 +413,10 @@ class OdooHandler(ResourceHandler):
                     "status": {
                         "syncStatus": {
                             "lastSync": datetime.now().isoformat(),
-                            "previousReplicas": None
+                            "previousReplicas": None,
                         }
                     }
-                }
+                },
             )
 
             # Reset the sync.enabled flag to false in spec
@@ -432,7 +426,7 @@ class OdooHandler(ResourceHandler):
                 version="v1",
                 namespace=self.namespace,
                 plural="odooinstances",
-                name=self.name
+                name=self.name,
             )
 
             spec = instance.get("spec", {})
@@ -447,18 +441,20 @@ class OdooHandler(ResourceHandler):
                 namespace=self.namespace,
                 plural="odooinstances",
                 name=self.name,
-                body={
-                    "spec": spec
-                }
+                body={"spec": spec},
             )
 
             # Trigger a deployment update to ensure the new code is used
             self.deployment_handler.handle_update()
 
         except client.exceptions.ApiException as e:
-            logging.error(f"Failed to restart deployment {self.name}: {e}", exc_info=True)
+            logging.error(
+                f"Failed to restart deployment {self.name}: {e}", exc_info=True
+            )
         except Exception as e:
-            logging.error(f"Error restarting deployment {self.name}: {e}", exc_info=True)
+            logging.error(
+                f"Error restarting deployment {self.name}: {e}", exc_info=True
+            )
 
     def validate_database_exists(self, database_name):
         """
@@ -590,4 +586,14 @@ class OdooHandler(ResourceHandler):
             name=self.name,
             uid=self.uid,
             block_owner_deletion=True,
+        )
+
+    def _read_resource(self):
+        api = client.CustomObjectsApi()
+        return api.get_namespaced_custom_object(
+            group="bemade.org",
+            version="v1",
+            namespace=self.namespace,
+            plural="odooinstances",
+            name=self.name,
         )
