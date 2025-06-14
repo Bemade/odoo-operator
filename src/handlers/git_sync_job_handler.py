@@ -176,6 +176,14 @@ echo "Git sync completed successfully"
 
         patch = {"spec": {"sync": {"enabled": False}}}
 
+        # Scale down the deployment
+        patch = {"spec": {"replicas": 0}}
+        client.AppsV1Api().patch_namespaced_deployment(
+            name=self.handler.deployment.name,
+            namespace=self.handler.deployment.namespace,
+            body=patch,
+        )
+
         # Create the job
         job = client.BatchV1Api().create_namespaced_job(
             namespace=self.namespace, body=job
