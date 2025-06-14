@@ -231,6 +231,16 @@ echo "Git sync completed successfully"
                 status_patch["syncStatus"]["lastError"] = "Git sync job failed"
                 logger.error(f"Git sync job failed for {self.name}")
 
+            # Disable sync
+            patch = {"spec": {"sync": {"enabled": False}}}
+            client.CustomObjectsApi().patch_namespaced_custom_object(
+                group="bemade.org",
+                version="v1",
+                namespace=self.handler.namespace,
+                plural="odooinstances",
+                name=self.handler.name,
+                body=patch,
+            )
             # Update status and spec via k8s client API
             # Update the status
             client.CustomObjectsApi().patch_namespaced_custom_object_status(
