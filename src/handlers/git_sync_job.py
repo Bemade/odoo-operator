@@ -75,7 +75,7 @@ git config --global core.sshCommand 'ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecki
 """
 
         git_script = f"""#!/bin/sh
-set -e
+set -x
 
 MOUNT_DIR="/repo"
 REPO_DIR="/repo/odoo-code"
