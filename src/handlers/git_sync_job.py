@@ -93,7 +93,6 @@ if [ -d "$REPO_DIR/.git" ]; then
     cd "$REPO_DIR"
 
     # Reset any local changes in main repo and submodules
-    git submodule foreach --recursive 'git reset --hard && git clean -fd'
     git reset --hard
     git clean -fd
 
@@ -102,6 +101,7 @@ if [ -d "$REPO_DIR/.git" ]; then
     git reset --hard "origin/$BRANCH"
 
     # Update submodules to their recorded commits
+    git submodule foreach --recursive 'git clean -fd'
     git submodule update --init --recursive --depth=1 --force
 else
     echo "Cloning repository..."
