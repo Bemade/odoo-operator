@@ -85,7 +85,6 @@ git config --global core.sshCommand 'ssh -i /root/.ssh/id_rsa -o StrictHostKeyCh
 
 # Make git more verbose for debugging
 git config --global --add advice.detachedHead false
-export GIT_TRACE=1
 """
 
         git_script = f"""#!/bin/sh
