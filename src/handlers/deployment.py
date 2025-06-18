@@ -345,7 +345,6 @@ class Deployment(ResourceHandler):
                 privileged=True,
                 run_as_user=0,
                 run_as_group=0,
-                fs_group=101,
             ),
             env=[python_path_var],
         )
