@@ -144,7 +144,7 @@ class UpgradeJob(JobHandler):
                     ],
                 ),
             ),
-            backoff_limit=2,  # Retry at most 2 times
+            backoff_limit=0,  # Retry at most 2 times
             ttl_seconds_after_finished=3600,  # Delete job 1 hour after completion
         )
 

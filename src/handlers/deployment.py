@@ -3,7 +3,7 @@ from kubernetes import client
 from .resource_handler import ResourceHandler, update_if_exists, create_if_missing
 import logging
 import os
-from typing import cast, TYPE_CHECKING
+from typing import cast, TYPE_CHECKING, Tuple, List
 
 if TYPE_CHECKING:
     from .odoo_handler import OdooHandler
@@ -299,7 +299,9 @@ class Deployment(ResourceHandler):
             env=[python_path_var],
         )
 
-    def get_volumes_and_mounts(self):
+    def get_volumes_and_mounts(
+        self,
+    ) -> Tuple[List[client.V1Volume], List[client.V1VolumeMount]]:
         # Define volumes
         volumes = [
             client.V1Volume(
