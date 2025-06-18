@@ -346,3 +346,5 @@ class Deployment(ResourceHandler):
                 mount_path="/mnt/python-deps",
             ),
         ]
+
+        return volumes, volume_mounts
