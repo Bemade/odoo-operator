@@ -125,7 +125,7 @@ class Deployment(ResourceHandler):
 
         # Add Git repository volume if configured
         if self.spec.get("gitProject"):
-            volumes.append(
+            volumes += [
                 client.V1Volume(
                     name="repo-volume",
                     persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
@@ -136,7 +136,7 @@ class Deployment(ResourceHandler):
                     name="python-deps",
                     empty_dir=client.V1EmptyDirVolumeSource(),
                 ),
-            )
+            ]
 
         # Define volume mounts
         volume_mounts = [
