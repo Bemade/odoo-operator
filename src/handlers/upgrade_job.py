@@ -67,46 +67,7 @@ class UpgradeJob(JobHandler):
 
         db_host = os.environ["DB_HOST"]
         db_port = os.environ["DB_PORT"]
-        volumes = [
-            client.V1Volume(
-                name=f"filestore",
-                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                    claim_name=f"{self.name}-filestore-pvc"
-                ),
-            ),
-            client.V1Volume(
-                name="odoo-conf",
-                config_map=client.V1ConfigMapVolumeSource(
-                    name=f"{self.name}-odoo-conf"
-                ),
-            ),
-        ]
-        volume_mounts = [
-            client.V1VolumeMount(
-                name="filestore",
-                mount_path="/var/lib/odoo",
-            ),
-            client.V1VolumeMount(
-                name="odoo-conf",
-                mount_path="/etc/odoo",
-            ),
-        ]
-
-        if self.handler.git_repo_pvc.resource:
-            volumes.append(
-                client.V1Volume(
-                    name="git-repo",
-                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                        claim_name=self.handler.git_repo_pvc.resource.metadata.name
-                    ),
-                )
-            )
-            volume_mounts.append(
-                client.V1VolumeMount(
-                    name="git-repo",
-                    mount_path="/mnt/repo",
-                )
-            )
+        volumes, volume_mounts = self.handler.deployment.get_volumes_and_mounts()
 
         # Create the job spec
         job_spec = client.V1JobSpec(

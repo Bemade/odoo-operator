@@ -107,52 +107,7 @@ class Deployment(ResourceHandler):
 
         image = self.spec.get("image", self.defaults.get("odooImage", "odoo:18.0"))
 
-        # Define volumes
-        volumes = [
-            client.V1Volume(
-                name="filestore",
-                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                    claim_name=f"{self.name}-filestore-pvc"
-                ),
-            ),
-            client.V1Volume(
-                name="odoo-conf",
-                config_map=client.V1ConfigMapVolumeSource(
-                    name=f"{self.name}-odoo-conf"
-                ),
-            ),
-        ]
-
-        # Add Git repository volume if configured
-        if self.spec.get("gitProject"):
-            volumes += [
-                client.V1Volume(
-                    name="repo-volume",
-                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                        claim_name=f"{self.name}-repo-pvc"
-                    ),
-                ),
-                client.V1Volume(
-                    name="python-deps",
-                    empty_dir=client.V1EmptyDirVolumeSource(),
-                ),
-            ]
-
-        # Define volume mounts
-        volume_mounts = [
-            client.V1VolumeMount(
-                name="filestore",
-                mount_path="/var/lib/odoo",
-            ),
-            client.V1VolumeMount(
-                name="odoo-conf",
-                mount_path="/etc/odoo",
-            ),
-            client.V1VolumeMount(
-                name="python-deps",
-                mount_path="/mnt/python-deps",
-            ),
-        ]
+        volumes, volume_mounts = self.get_volumes_and_mounts()
 
         # Add Git repository volume mount if configured
         if self.spec.get("gitProject"):
@@ -343,3 +298,51 @@ class Deployment(ResourceHandler):
             ),
             env=[python_path_var],
         )
+
+    def get_volumes_and_mounts(self):
+        # Define volumes
+        volumes = [
+            client.V1Volume(
+                name="filestore",
+                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                    claim_name=f"{self.name}-filestore-pvc"
+                ),
+            ),
+            client.V1Volume(
+                name="odoo-conf",
+                config_map=client.V1ConfigMapVolumeSource(
+                    name=f"{self.name}-odoo-conf"
+                ),
+            ),
+        ]
+
+        # Add Git repository volume if configured
+        if self.spec.get("gitProject"):
+            volumes += [
+                client.V1Volume(
+                    name="repo-volume",
+                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                        claim_name=f"{self.name}-repo-pvc"
+                    ),
+                ),
+                client.V1Volume(
+                    name="python-deps",
+                    empty_dir=client.V1EmptyDirVolumeSource(),
+                ),
+            ]
+
+        # Define volume mounts
+        volume_mounts = [
+            client.V1VolumeMount(
+                name="filestore",
+                mount_path="/var/lib/odoo",
+            ),
+            client.V1VolumeMount(
+                name="odoo-conf",
+                mount_path="/etc/odoo",
+            ),
+            client.V1VolumeMount(
+                name="python-deps",
+                mount_path="/mnt/python-deps",
+            ),
+        ]
