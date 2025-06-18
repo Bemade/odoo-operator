@@ -204,7 +204,7 @@ class Deployment(ResourceHandler):
                             args=[
                                 """
                                 # Check for requirements.txt and install if present
-                                REQUIREMENTS_FILE="/mnt/repo/requirements.txt"
+                                REQUIREMENTS_FILE="/mnt/repo/odoo-code/requirements.txt"
                                 if [ -f "$REQUIREMENTS_FILE" ]; then
                                     echo "Found requirements.txt, installing Python dependencies..."
 
