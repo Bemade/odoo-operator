@@ -16,7 +16,8 @@ class FilestorePVC(PVCHandler):
     def _get_resource_body(self):
         """Get the PVC definition for the filestore."""
         spec = self.spec.get("filestore", {})
-        size = spec.get("size", self.default_size)
+        # Prefer 'storageSize' (as defined in the CRD), fallback to 'size' for backward-compat
+        size = spec.get("storageSize", self.default_size)
         storage_class = spec.get("storageClass")
 
         metadata = client.V1ObjectMeta(
