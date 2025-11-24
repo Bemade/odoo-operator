@@ -163,7 +163,6 @@ DO $$
 DECLARE
     new_secret TEXT := gen_random_uuid()::text;
     new_uuid TEXT := gen_random_uuid()::text;
-    current_time TIMESTAMP := NOW();
 BEGIN
     -- Delete existing parameters that need to be refreshed
     DELETE FROM ir_config_parameter WHERE key IN (
@@ -177,12 +176,12 @@ BEGIN
     
     -- Insert fresh parameters
     INSERT INTO ir_config_parameter (key, value, create_uid, create_date, write_uid, write_date) VALUES
-        ('database.secret', new_secret, 1, current_time, 1, current_time),
-        ('database.uuid', new_uuid, 1, current_time, 1, current_time),
-        ('database.create_date', current_time::text, 1, current_time, 1, current_time),
-        ('web.base.url', 'http://localhost:8069', 1, current_time, 1, current_time),
-        ('base.login_cooldown_after', '10', 1, current_time, 1, current_time),
-        ('base.login_cooldown_duration', '60', 1, current_time, 1, current_time);
+        ('database.secret', new_secret, 1, LOCALTIMESTAMP, 1, LOCALTIMESTAMP),
+        ('database.uuid', new_uuid, 1, LOCALTIMESTAMP, 1, LOCALTIMESTAMP),
+        ('database.create_date', LOCALTIMESTAMP::text, 1, LOCALTIMESTAMP, 1, LOCALTIMESTAMP),
+        ('web.base.url', 'http://localhost:8069', 1, LOCALTIMESTAMP, 1, LOCALTIMESTAMP),
+        ('base.login_cooldown_after', '10', 1, LOCALTIMESTAMP, 1, LOCALTIMESTAMP),
+        ('base.login_cooldown_duration', '60', 1, LOCALTIMESTAMP, 1, LOCALTIMESTAMP);
         
     RAISE NOTICE 'Database parameters re-initialized successfully';
 EXCEPTION
