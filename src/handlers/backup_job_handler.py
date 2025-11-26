@@ -452,19 +452,24 @@ echo "Upload complete"
 
         headers = {"Content-Type": "application/json"}
 
-        # Get token from secret if provided
-        secret_ref = self.webhook.get("secretTokenSecretRef")
-        if secret_ref:
-            try:
-                secret = client.CoreV1Api().read_namespaced_secret(
-                    name=secret_ref["name"], namespace=self.namespace
-                )
-                token_b64 = secret.data.get(secret_ref["key"])
-                if token_b64:
-                    token = base64.b64decode(token_b64).decode("utf-8")
-                    headers["Authorization"] = f"Bearer {token}"
-            except Exception as e:
-                logger.warning(f"Failed to read webhook secret: {e}")
+        # Get token - either directly from spec or from secret reference
+        token = self.webhook.get("token")
+        if not token:
+            # Fall back to secret reference
+            secret_ref = self.webhook.get("secretTokenSecretRef")
+            if secret_ref:
+                try:
+                    secret = client.CoreV1Api().read_namespaced_secret(
+                        name=secret_ref["name"], namespace=self.namespace
+                    )
+                    token_b64 = secret.data.get(secret_ref["key"])
+                    if token_b64:
+                        token = base64.b64decode(token_b64).decode("utf-8")
+                except Exception as e:
+                    logger.warning(f"Failed to read webhook secret: {e}")
+
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
 
         payload = {
             "backupJob": self.name,
