@@ -15,6 +15,7 @@ from .service import Service
 from .ingress_routes import IngressRouteHTTPS, IngressRouteWebsocket
 from .upgrade_job import UpgradeJob
 from .restore_job import RestoreJob
+from .init_job import InitJob
 from .database_initialization import DatabaseInitializationHandler
 from .resource_handler import ResourceHandler
 import logging
@@ -66,6 +67,7 @@ class OdooHandler(ResourceHandler):
         self.ingress_route_https = IngressRouteHTTPS(self)
         self.ingress_route_websocket = IngressRouteWebsocket(self)
         self.database_initialization = DatabaseInitializationHandler(self)
+        self.init_job = InitJob(self)
         self.upgrade_job = UpgradeJob(self)
         self.restore_job = RestoreJob(self)
 
@@ -93,14 +95,19 @@ class OdooHandler(ResourceHandler):
         for handler in self.handlers:
             handler.handle_create()
 
-        # Initialize the status to Running for fresh instances
-        # (restore instances will have their status set by the restore job)
+        # For fresh instances (no restore), run the init job to create the database
+        # The init job will set status to "Initializing" and then "Running" when complete
         if not self.spec.get("restore"):
-            self._initialize_status()
+            logging.info(f"Creating init job for fresh instance {self.name}")
+            self.init_job.handle_create()
+        # Note: We don't initialize status here - the init job handles that
 
     def on_update(self):
         """Handle update events for this OdooInstance."""
         logging.info(f"Handling update for OdooInstance {self.name}")
+
+        # Check for init job completion
+        self.init_job.handle_update()
 
         if self._is_restore_request() and self._should_execute_restore():
             logging.info(f"Restore requested for {self.name}")
@@ -234,6 +241,7 @@ class OdooHandler(ResourceHandler):
                 body={
                     "status": {
                         "phase": "Running",
+                        "initJob": None,
                         "restoreJob": None,
                         "upgradeJob": None,
                     }
@@ -263,6 +271,9 @@ class OdooHandler(ResourceHandler):
         if phase == "Running":
             logging.debug(f"Status for {self.name} is Running. No action needed.")
             return
+        if phase == "Initializing" and self.init_job.is_running:
+            logging.debug(f"Status for {self.name} is Initializing. No action needed.")
+            return
         if phase == "Upgrading" and self.upgrade_job.is_running:
             logging.debug(f"Status for {self.name} is Upgrading. No action needed.")
             return
@@ -279,7 +290,12 @@ class OdooHandler(ResourceHandler):
             plural="odooinstances",
             name=self.name,
             body={
-                "status": {"phase": "Running", "restoreJob": None, "upgradeJob": None}
+                "status": {
+                    "phase": "Running",
+                    "initJob": None,
+                    "restoreJob": None,
+                    "upgradeJob": None,
+                }
             },
         )
 

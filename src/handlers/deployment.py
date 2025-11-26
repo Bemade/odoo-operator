@@ -128,6 +128,10 @@ class Deployment(ResourceHandler):
                             image=image,
                             image_pull_policy="IfNotPresent",
                             command=["/entrypoint.sh", "odoo"],
+                            args=[
+                                "-d",
+                                f"odoo_{self.handler.uid.replace('-', '_')}",
+                            ],
                             ports=[
                                 client.V1ContainerPort(
                                     container_port=8069,
