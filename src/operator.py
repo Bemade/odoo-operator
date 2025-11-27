@@ -6,6 +6,7 @@ from kubernetes.client.rest import ApiException
 from handlers.odoo_handler import OdooHandler
 from handlers.backup_job_handler import OdooBackupJobHandler
 from handlers.restore_job_handler import OdooRestoreJobHandler
+from handlers.upgrade_job_handler import OdooUpgradeJobHandler
 from webhook_server import ServiceModeWebhookServer
 
 # Configure logging
@@ -285,6 +286,44 @@ def _is_odoo_job(body, *args, **kwargs):
         ):
             return True
     return False
+
+
+# ============== OdooUpgradeJob handlers ==============
+
+
+@kopf.on.create("bemade.org", "v1", "odooupgradejobs")
+def create_upgrade_job(body, *args, **kwargs):
+    """Handle creation of OdooUpgradeJob CR."""
+    handler = OdooUpgradeJobHandler(body, **kwargs)
+    try:
+        handler.on_create()
+    except ApiException as e:
+        _classify_and_raise_api_exception(e)
+    except (kopf.PermanentError, kopf.TemporaryError):
+        raise
+    except Exception as e:
+        raise kopf.TemporaryError(str(e), delay=30)
+
+
+@kopf.on.update("bemade.org", "v1", "odooupgradejobs")
+def update_upgrade_job(body, *args, **kwargs):
+    """Handle update of OdooUpgradeJob CR."""
+    handler = OdooUpgradeJobHandler(body, **kwargs)
+    try:
+        handler.on_update()
+    except ApiException as e:
+        _classify_and_raise_api_exception(e)
+    except (kopf.PermanentError, kopf.TemporaryError):
+        raise
+    except Exception as e:
+        raise kopf.TemporaryError(str(e), delay=30)
+
+
+@kopf.timer("bemade.org", "v1", "odooupgradejobs", interval=15.0)
+def check_upgrade_job_periodic(body, *args, **kwargs):
+    """Periodic check for OdooUpgradeJobs to update status from underlying Job."""
+    handler = OdooUpgradeJobHandler(body, **kwargs)
+    handler.check_job_status()
 
 
 @kopf.on.field("batch", "v1", "jobs", when=_is_odoo_job, field="status.failed")

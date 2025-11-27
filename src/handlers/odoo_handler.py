@@ -1,6 +1,4 @@
 from kubernetes import client
-from kubernetes.client.rest import ApiException
-import kopf
 import os
 import yaml
 import requests
@@ -14,8 +12,6 @@ from .tls_cert import TLSCert
 from .deployment import Deployment
 from .service import Service
 from .ingress_routes import IngressRouteHTTPS, IngressRouteWebsocket
-from .upgrade_job import UpgradeJob
-from .restore_job import RestoreJob
 from .resource_handler import ResourceHandler
 import logging
 from enum import Enum
@@ -23,7 +19,6 @@ from enum import Enum
 
 class Stage(Enum):
     RUNNING = "Running"
-    UPGRADING = "Upgrading"
 
 
 class OdooHandler(ResourceHandler):
@@ -65,8 +60,6 @@ class OdooHandler(ResourceHandler):
         self.service = Service(self)
         self.ingress_route_https = IngressRouteHTTPS(self)
         self.ingress_route_websocket = IngressRouteWebsocket(self)
-        self.upgrade_job = UpgradeJob(self)
-        self.restore_job = RestoreJob(self)
 
         # Create handlers list in the correct order for creation/update
         self.handlers = [
@@ -81,8 +74,6 @@ class OdooHandler(ResourceHandler):
             self.ingress_route_websocket,
         ]
 
-        # The Job handlers (upgrade, restore) are handled separately
-
     def on_create(self):
         logging.info(f"Creating OdooInstance {self.name}")
         # Create all resources in the correct order
@@ -90,22 +81,15 @@ class OdooHandler(ResourceHandler):
             handler.handle_create()
 
         # Initialize status to Running - database initialization is handled externally
-        # (either Odoo auto-initializes on first start, or a RestoreJob is created)
+        # (either Odoo auto-initializes on first start, or an OdooRestoreJob CR is created)
         self._initialize_status()
 
     def on_update(self):
         """Handle update events for this OdooInstance."""
         logging.info(f"Handling update for OdooInstance {self.name}")
+        # NOTE: Restores handled via OdooRestoreJob CRD, upgrades via OdooUpgradeJob CRD
 
-        if self._is_restore_request() and self._should_execute_restore():
-            logging.info(f"Restore requested for {self.name}")
-            self._handle_restore()
-        # Check if this is an upgrade request that should be executed now
-        if self._is_upgrade_request() and self._should_execute_upgrade():
-            logging.info(f"Upgrade requested for {self.name}")
-            self._handle_upgrade()
-
-        # Always update resource handlers
+        # Update resource handlers
         logging.debug(f"Running regular update for handlers of {self.name}")
         for handler in self.handlers:
             handler.handle_update()
@@ -116,90 +100,6 @@ class OdooHandler(ResourceHandler):
         for handler in reversed(self.handlers):
             handler.handle_delete()
 
-    def _is_restore_request(self):
-        """Check if the spec contains a valid restore request."""
-        restore_spec = self.spec.get("restore", {})
-        return restore_spec and restore_spec.get("enabled", False)
-
-    def _should_execute_restore(self):
-        """Determine if a restore request should be executed now.
-        Check if:
-
-        1. If a restore job is already running
-        2. If a restore job is requested
-        """
-        return not self.restore_job.is_running and self._is_restore_request()
-
-    def _handle_restore(self):
-        """Handle the restore process."""
-        logging.info(f"Starting restore process for {self.name}")
-
-        # Create or update the restore job
-        self.restore_job.handle_update()
-
-        # The job will run asynchronously, and we'll check for completion
-        # in the check_restore_job_completion method that will be called periodically
-        logging.debug(
-            f"Restore job created for {self.name}, will check for completion periodically"
-        )
-
-    def _is_upgrade_request(self):
-        """Check if the spec contains a valid upgrade request."""
-        upgrade_spec = self.spec.get("upgrade", {})
-        modules = upgrade_spec.get("modules", [])
-
-        # Basic validation that this is an upgrade request
-        # Database name is now auto-generated from UID, so we don't need to check for it
-        return upgrade_spec and isinstance(modules, list) and len(modules) > 0
-
-    def _should_execute_upgrade(self):
-        """
-        Determine if an upgrade request should be executed now.
-
-        This checks:
-        1. If a restore job is already running
-        2. If an upgrade job is already running
-        3. If a scheduled time is specified and has passed
-        """
-        if self.restore_job.is_running:
-            return False
-        if self.upgrade_job.is_running:
-            return False
-
-        # If it's not a valid upgrade request, don't execute
-        if not self._is_upgrade_request():
-            return False
-
-        upgrade_spec = self.spec.get("upgrade", {})
-        scheduled_time = upgrade_spec.get("time", "")
-
-        # If no scheduled time is specified, execute immediately
-        if not scheduled_time:
-            return True
-
-        # If a scheduled time is specified, check if it's time to execute
-        try:
-            # Parse the scheduled time
-            from datetime import datetime, timezone
-
-            # Parse the ISO format time string
-            scheduled_datetime = datetime.fromisoformat(
-                scheduled_time.replace("Z", "+00:00")
-            )
-
-            # Get the current time in UTC
-            current_time = datetime.now(timezone.utc)
-
-            # If the scheduled time has passed, it's time to execute the upgrade
-            return current_time >= scheduled_datetime
-        except Exception as e:
-            logging.error(
-                f"Error parsing scheduled upgrade time for {self.name}: {e}",
-                exc_info=True,
-            )
-            # If there's an error parsing the time, default to not upgrading
-            return False
-
     def check_periodic(self):
         """
         Periodic checks for this instance.
@@ -207,12 +107,6 @@ class OdooHandler(ResourceHandler):
         # Check if the status is somehow out of date
 
         self._check_status()
-
-        # Check for scheduled upgrades
-        self._check_scheduled_upgrade()
-
-        # Add any future periodic checks here
-        # ...
 
     def _initialize_status(self):
         """
@@ -229,9 +123,6 @@ class OdooHandler(ResourceHandler):
                 body={
                     "status": {
                         "phase": "Running",
-                        "initJob": None,
-                        "restoreJob": None,
-                        "upgradeJob": None,
                     }
                 },
             )
@@ -287,55 +178,6 @@ class OdooHandler(ResourceHandler):
             return
         if phase == "Running":
             logging.debug(f"Status for {self.name} is Running. No action needed.")
-            return
-        if phase == "Upgrading" and self.upgrade_job.is_running:
-            logging.debug(f"Status for {self.name} is Upgrading. No action needed.")
-            return
-        if phase == "Restoring" and self.restore_job.is_running:
-            logging.debug(f"Status for {self.name} is Restoring. No action needed.")
-            return
-        logging.debug(
-            f"Resetting status to Running since job for {phase} is not running."
-        )
-        client.CustomObjectsApi().patch_namespaced_custom_object_status(
-            group="bemade.org",
-            version="v1",
-            namespace=self.namespace,
-            plural="odooinstances",
-            name=self.name,
-            body={
-                "status": {
-                    "phase": "Running",
-                    "initJob": None,
-                    "restoreJob": None,
-                    "upgradeJob": None,
-                }
-            },
-        )
-
-    def _check_scheduled_upgrade(self):
-        """
-        Check if this instance has a scheduled upgrade that should be executed now.
-        """
-        logging.debug(f"Checking for scheduled upgrades for {self.name}")
-
-        # Check if this is an upgrade request that should be executed now
-        if self._is_upgrade_request() and self._should_execute_upgrade():
-            logging.info(f"Executing scheduled upgrade for {self.name}")
-            self._handle_upgrade()
-
-    def _handle_upgrade(self):
-        """Handle the upgrade process."""
-        logging.info(f"Starting upgrade process for {self.name}")
-
-        # Create or update the upgrade job
-        self.upgrade_job.handle_update()
-
-        # The job will run asynchronously, and we'll check for completion
-        # in the check_upgrade_job_completion method that will be called periodically
-        logging.debug(
-            f"Upgrade job created for {self.name}, will check for completion periodically"
-        )
 
     def validate_database_exists(self, database_name):
         """
@@ -498,9 +340,5 @@ class OdooHandler(ResourceHandler):
 
     def handle_job_completion(self, body: dict):
         """Handle completion of various types of jobs for this instance."""
-
-        match body.get("metadata", {}).get("name"):
-            case name if "upgrade" in name:
-                self.upgrade_job.handle_update()
-            case name if "restore" in name:
-                self.restore_job.handle_update()
+        # NOTE: Restore/upgrade jobs now handled via separate CRDs
+        pass
