@@ -519,7 +519,11 @@ if [ -f /mnt/backup/dump.dump ]; then
     # Restore using pg_restore for custom format dumps
     pg_restore -h "$HOST" -p "$PORT" -U "$USER" -d "{db_name}" --no-owner /mnt/backup/dump.dump || true
     
-    reinit_db_params
+    if [ "$NEUTRALIZE" = "True" ]; then
+        reinit_db_params
+    else
+        echo "Skipping database parameter re-initialization (neutralize=False)"
+    fi
     
 elif [ -f /mnt/backup/dump.sql ]; then
     echo "Found dump.sql - using psql method"
@@ -530,7 +534,11 @@ elif [ -f /mnt/backup/dump.sql ]; then
     # Restore using psql for plain SQL dumps
     psql -h "$HOST" -p "$PORT" -U "$USER" -d "{db_name}" -f /mnt/backup/dump.sql
     
-    reinit_db_params
+    if [ "$NEUTRALIZE" = "True" ]; then
+        reinit_db_params
+    else
+        echo "Skipping database parameter re-initialization (neutralize=False)"
+    fi
     
 elif [ -f /mnt/backup/backup.zip ]; then
     echo "Found backup.zip - using odoo db load method"
