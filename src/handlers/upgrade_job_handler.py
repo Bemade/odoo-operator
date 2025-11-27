@@ -74,6 +74,21 @@ class OdooUpgradeJobHandler:
                 return
             raise
 
+        # Check if instance is already being upgraded or restored
+        instance_phase = odoo_instance.get("status", {}).get("phase")
+        if instance_phase in ("Upgrading", "Restoring"):
+            self._update_status(
+                "Failed",
+                message=f"OdooInstance {instance_name} is already {instance_phase}",
+            )
+            return
+
+        # Scale down the deployment before upgrading
+        self._scale_deployment(instance_name, instance_ns, 0)
+
+        # Update OdooInstance phase to Upgrading
+        self._update_instance_phase("Upgrading")
+
         # Create the upgrade Job
         job = self._create_upgrade_job(odoo_instance)
         logger.info(f"Created upgrade job {job.metadata.name} for {self.name}")
@@ -116,6 +131,9 @@ class OdooUpgradeJobHandler:
 
         job_status = job.status
         if job_status.succeeded:
+            # Scale deployment back up
+            self._restore_deployment_scale()
+
             self._update_status(
                 "Completed",
                 completion_time=(
@@ -124,8 +142,13 @@ class OdooUpgradeJobHandler:
                     else None
                 ),
             )
+            # Reset OdooInstance phase back to Running
+            self._update_instance_phase("Running")
             self._notify_webhook("Completed")
         elif job_status.failed:
+            # Scale deployment back up even on failure
+            self._restore_deployment_scale()
+
             self._update_status(
                 "Failed",
                 completion_time=(
@@ -135,6 +158,8 @@ class OdooUpgradeJobHandler:
                 ),
                 message="Upgrade job failed",
             )
+            # Reset OdooInstance phase back to Running even on failure
+            self._update_instance_phase("Running")
             self._notify_webhook("Failed")
 
     def _create_upgrade_job(self, odoo_instance: dict) -> client.V1Job:
@@ -277,6 +302,71 @@ class OdooUpgradeJobHandler:
             name=self.name,
             body={"status": status_body},
         )
+
+    def _scale_deployment(self, instance_name: str, namespace: str, replicas: int):
+        """Scale the OdooInstance deployment to the specified number of replicas."""
+        try:
+            apps_api = client.AppsV1Api()
+            apps_api.patch_namespaced_deployment_scale(
+                name=instance_name,
+                namespace=namespace,
+                body={"spec": {"replicas": replicas}},
+            )
+            logger.info(f"Scaled deployment {instance_name} to {replicas} replicas")
+        except ApiException as e:
+            if e.status == 404:
+                logger.warning(f"Deployment {instance_name} not found, cannot scale")
+            else:
+                logger.error(f"Failed to scale deployment {instance_name}: {e}")
+
+    def _restore_deployment_scale(self):
+        """Scale the OdooInstance deployment back up after upgrade completes."""
+        instance_name = self.odoo_instance_ref.get("name")
+        instance_ns = self.odoo_instance_ref.get("namespace", self.namespace)
+
+        if not instance_name:
+            logger.warning("No instance name, cannot restore deployment scale")
+            return
+
+        # Get the desired replicas from the OdooInstance spec
+        try:
+            odoo_instance = client.CustomObjectsApi().get_namespaced_custom_object(
+                group="bemade.org",
+                version="v1",
+                namespace=instance_ns,
+                plural="odooinstances",
+                name=instance_name,
+            )
+            replicas = odoo_instance.get("spec", {}).get("replicas", 1)
+        except ApiException as e:
+            logger.warning(
+                f"Could not get OdooInstance {instance_name}, defaulting to 1 replica: {e}"
+            )
+            replicas = 1
+
+        self._scale_deployment(instance_name, instance_ns, replicas)
+
+    def _update_instance_phase(self, phase: str):
+        """Update the OdooInstance status phase."""
+        instance_name = self.odoo_instance_ref.get("name")
+        instance_ns = self.odoo_instance_ref.get("namespace", self.namespace)
+
+        if not instance_name:
+            logger.warning("No instance name in odooInstanceRef, cannot update phase")
+            return
+
+        try:
+            client.CustomObjectsApi().patch_namespaced_custom_object_status(
+                group="bemade.org",
+                version="v1",
+                namespace=instance_ns,
+                plural="odooinstances",
+                name=instance_name,
+                body={"status": {"phase": phase}},
+            )
+            logger.info(f"Updated OdooInstance {instance_name} phase to {phase}")
+        except ApiException as e:
+            logger.warning(f"Failed to update OdooInstance phase: {e}")
 
     def _notify_webhook(self, phase: str):
         """Send webhook notification if configured."""

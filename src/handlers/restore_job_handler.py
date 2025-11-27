@@ -129,6 +129,15 @@ class OdooRestoreJobHandler:
             self._update_status("Failed", message="Invalid OdooInstance response")
             return
 
+        # Check if instance is already being upgraded or restored
+        instance_phase = odoo_instance.get("status", {}).get("phase")
+        if instance_phase in ("Upgrading", "Restoring"):
+            self._update_status(
+                "Failed",
+                message=f"OdooInstance {instance_name} is already {instance_phase}",
+            )
+            return
+
         # Scale down the deployment before restore
         self._scale_deployment(instance_name, instance_ns, 0)
 
