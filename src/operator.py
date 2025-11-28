@@ -7,6 +7,7 @@ from handlers.odoo_handler import OdooHandler
 from handlers.backup_job_handler import OdooBackupJobHandler
 from handlers.restore_job_handler import OdooRestoreJobHandler
 from handlers.upgrade_job_handler import OdooUpgradeJobHandler
+from handlers.init_job_handler import OdooInitJobHandler
 from webhook_server import ServiceModeWebhookServer
 
 # Configure logging
@@ -323,6 +324,44 @@ def update_upgrade_job(body, *args, **kwargs):
 def check_upgrade_job_periodic(body, *args, **kwargs):
     """Periodic check for OdooUpgradeJobs to update status from underlying Job."""
     handler = OdooUpgradeJobHandler(body, **kwargs)
+    handler.check_job_status()
+
+
+# ============== OdooInitJob handlers ==============
+
+
+@kopf.on.create("bemade.org", "v1", "odooinitjobs")
+def create_init_job(body, *args, **kwargs):
+    """Handle creation of OdooInitJob CR."""
+    handler = OdooInitJobHandler(body, **kwargs)
+    try:
+        handler.on_create()
+    except ApiException as e:
+        _classify_and_raise_api_exception(e)
+    except (kopf.PermanentError, kopf.TemporaryError):
+        raise
+    except Exception as e:
+        raise kopf.TemporaryError(str(e), delay=30)
+
+
+@kopf.on.update("bemade.org", "v1", "odooinitjobs")
+def update_init_job(body, *args, **kwargs):
+    """Handle update of OdooInitJob CR."""
+    handler = OdooInitJobHandler(body, **kwargs)
+    try:
+        handler.on_update()
+    except ApiException as e:
+        _classify_and_raise_api_exception(e)
+    except (kopf.PermanentError, kopf.TemporaryError):
+        raise
+    except Exception as e:
+        raise kopf.TemporaryError(str(e), delay=30)
+
+
+@kopf.timer("bemade.org", "v1", "odooinitjobs", interval=15.0)
+def check_init_job_periodic(body, *args, **kwargs):
+    """Periodic check for OdooInitJobs to update status from underlying Job."""
+    handler = OdooInitJobHandler(body, **kwargs)
     handler.check_job_status()
 
 
