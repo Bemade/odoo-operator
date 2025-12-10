@@ -84,9 +84,6 @@ class OdooHandler(ResourceHandler):
         # (either Odoo auto-initializes on first start, or an OdooRestoreJob CR is created)
         self._initialize_status()
 
-        # Now that status is Running, update deployment to scale up
-        self.deployment.handle_update()
-
     def on_update(self):
         """Handle update events for this OdooInstance."""
         logging.info(f"Handling update for OdooInstance {self.name}")
