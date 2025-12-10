@@ -25,6 +25,12 @@ class Deployment(ResourceHandler):
             namespace=self.namespace,
         )
 
+    def _get_desired_replicas(self) -> int:
+        """Get the desired replica count, preserving current value if deployment exists."""
+        if self.resource and self.resource.spec:
+            return self.resource.spec.replicas or 0
+        return 0
+
     @update_if_exists
     def handle_create(self):
         deployment = self._get_resource_body()
@@ -39,28 +45,6 @@ class Deployment(ResourceHandler):
 
         if not deployment.spec:
             raise Exception("Deployment spec is missing")
-
-        instance_status = client.CustomObjectsApi().get_namespaced_custom_object_status(
-            group="bemade.org",
-            version="v1",
-            namespace=self.handler.namespace,
-            plural="odooinstances",
-            name=self.handler.name,
-        )
-        if not instance_status:
-            raise Exception("OdooInstance status could not be loaded.")
-        phase = cast(dict, instance_status).get("status", {}).get("phase")
-
-        logger.debug(f"Deployment {self.name} checking OdooInstance phase: {phase}")
-
-        # Only scale up if phase is Running; otherwise keep at 0
-        if phase == "Running":
-            desired_replicas = self.spec.get("replicas", 1)
-            deployment.spec.replicas = desired_replicas
-            logger.debug(f"Deployment {self.name} set to {desired_replicas} replicas")
-        else:
-            deployment.spec.replicas = 0
-            logger.debug(f"Deployment {self.name} kept at 0 replicas (phase: {phase})")
 
         self._resource = client.AppsV1Api().patch_namespaced_deployment(
             name=self.name,
@@ -101,11 +85,8 @@ class Deployment(ResourceHandler):
             else {}
         )
 
-        # Start with 0 replicas - init/restore jobs will scale up when complete
-        # For updates, handle_update() will set the correct replica count based on phase
-
         spec = client.V1DeploymentSpec(
-            replicas=0,
+            replicas=self._get_desired_replicas(),
             selector=client.V1LabelSelector(match_labels={"app": self.name}),
             strategy={"type": "Recreate"},
             template=client.V1PodTemplateSpec(
