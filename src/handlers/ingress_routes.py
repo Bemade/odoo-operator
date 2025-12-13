@@ -136,10 +136,10 @@ class IngressRouteWebsocket(IngressRouteBase):
             "entrypoint": "websecure",
             "port": 8072,
             "middlewares": [
-                {
-                    "name": "remove-prefix",
-                    "namespace": self.operator_ns,
-                },
+                # {
+                #     "name": "remove-prefix",
+                #     "namespace": self.operator_ns,
+                # },
             ],
             "match_suffix": " && PathPrefix(`/websocket`)",
         }

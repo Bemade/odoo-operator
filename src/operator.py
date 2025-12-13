@@ -8,6 +8,7 @@ from handlers.backup_job_handler import OdooBackupJobHandler
 from handlers.restore_job_handler import OdooRestoreJobHandler
 from handlers.upgrade_job_handler import OdooUpgradeJobHandler
 from handlers.init_job_handler import OdooInitJobHandler
+from typing import cast
 from webhook_server import ServiceModeWebhookServer
 
 # Configure logging
@@ -71,6 +72,10 @@ def configure_webhook(settings: kopf.OperatorSettings, *args, **kwargs):
             logger.error(f"Key file not found: {webhook_key_path}")
 
 
+@kopf.on.resume("bemade.org", "v1", "odooinstances")
+def restart_fn(*args, **kwargs):
+    update_fn(*args, **kwargs)
+
 def _classify_and_raise_api_exception(e: ApiException):
     """Map K8s ApiException to kopf Permanent/Temporary errors.
 
@@ -78,7 +83,7 @@ def _classify_and_raise_api_exception(e: ApiException):
     - Temporary: 409, 429, 5xx (conflicts, rate limits, server issues).
     - PVC shrink specific message mapped to permanent stop.
     """
-    body = getattr(e, "body", "") or ""
+    body = cast(str, getattr(e, "body", "") or "")
     status = getattr(e, "status", None)
     reason = getattr(e, "reason", "")
     msg = f"{status} {reason} {body}".strip()
