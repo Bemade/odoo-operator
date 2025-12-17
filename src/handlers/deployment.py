@@ -135,10 +135,10 @@ class Deployment(ResourceHandler):
                                     port=8069,
                                 ),
                                 initial_delay_seconds=2,
-                                period_seconds=2,
+                                period_seconds=15,
                                 timeout_seconds=2,
                                 success_threshold=1,
-                                failure_threshold=36,
+                                failure_threshold=40,
                             ),
                             readiness_probe=client.V1Probe(
                                 http_get=client.V1HTTPGetAction(
@@ -146,10 +146,10 @@ class Deployment(ResourceHandler):
                                     port=8069,
                                 ),
                                 initial_delay_seconds=2,
-                                period_seconds=2,
+                                period_seconds=15,
                                 timeout_seconds=2,
                                 success_threshold=1,
-                                failure_threshold=20,
+                                failure_threshold=40,
                             ),
                         )
                     ],
