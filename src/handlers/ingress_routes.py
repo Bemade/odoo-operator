@@ -58,7 +58,7 @@ class IngressRoute(ResourceHandler):
                     },
                     {
                         "kind": "Rule",
-                        "match": match_rule + " && PathPrefix(`/websocket`)",
+                        "match": "(" + match_rule + ") && PathPrefix(`/websocket`)",
                         "services": [
                             {
                                 "kind": "Service",
