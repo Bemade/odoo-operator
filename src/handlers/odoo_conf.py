@@ -4,8 +4,7 @@ import base64
 from passlib.context import CryptContext
 
 crypt_context = CryptContext(
-    schemes=["pbkdf2_sha512", "plaintext"],
-    deprecated=["plaintext"],
+    schemes=["pbkdf2_sha512"],
     pbkdf2_sha512__rounds=600_000,
 )
 
