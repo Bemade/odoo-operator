@@ -234,7 +234,7 @@ class OdooUpgradeJobHandler:
                 "-u",
                 modules_str,
                 "-i",
-                "modules_install_str",
+                modules_install_str,
                 "-d",
                 db_name,
                 "--no-http",
