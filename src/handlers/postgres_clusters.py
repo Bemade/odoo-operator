@@ -9,9 +9,10 @@ Each cluster entry contains:
 - port: PostgreSQL port (default 5432)
 - adminUser: Admin username for creating databases/users
 - adminPassword: Admin password
+- default: Boolean indicating if this is the default cluster
 
 OdooInstances can specify which cluster to use via spec.database.cluster.
-If not specified, the "default" cluster is used.
+If not specified, the cluster with 'default: true' is used.
 """
 
 import logging
@@ -40,6 +41,7 @@ class PostgresCluster:
     port: int
     admin_user: str
     admin_password: str
+    is_default: bool = False
 
     @classmethod
     def from_dict(cls, name: str, data: dict) -> "PostgresCluster":
@@ -50,6 +52,7 @@ class PostgresCluster:
             port=int(data.get("port", 5432)),
             admin_user=data.get("adminUser", "postgres"),
             admin_password=data.get("adminPassword", ""),
+            is_default=data.get("default", False),
         )
 
 
@@ -95,14 +98,27 @@ def _load_clusters() -> Dict[str, PostgresCluster]:
         return {}
 
 
+def get_default_cluster() -> Optional[PostgresCluster]:
+    """
+    Get the cluster marked as default.
+
+    Returns:
+        The default PostgresCluster, or None if no default is configured.
+    """
+    clusters = _load_clusters()
+    for cluster in clusters.values():
+        if cluster.is_default:
+            return cluster
+    return None
+
+
 def get_cluster(name: Optional[str] = None) -> PostgresCluster:
     """
     Get a PostgreSQL cluster configuration by name.
 
     Resolution order:
     1. If a cluster name is specified, use exact match
-    2. If no name specified, check legacy env vars (DB_HOST)
-    3. If no env vars, use the first cluster in the list
+    2. If no name specified, use the cluster marked as default
 
     Args:
         name: Cluster name (optional)
@@ -111,7 +127,7 @@ def get_cluster(name: Optional[str] = None) -> PostgresCluster:
         PostgresCluster configuration
 
     Raises:
-        ValueError: If the cluster is not found and no fallback available
+        ValueError: If the cluster is not found
     """
     clusters = _load_clusters()
 
@@ -126,27 +142,15 @@ def get_cluster(name: Optional[str] = None) -> PostgresCluster:
             f"PostgreSQL cluster '{name}' not found. Available clusters: {available}"
         )
 
-    # 2. No name specified - check legacy env vars first
-    db_host = os.environ.get("DB_HOST")
-    if db_host:
-        logger.info(f"Using legacy environment variables (DB_HOST={db_host})")
-        return PostgresCluster(
-            name="legacy",
-            host=db_host,
-            port=int(os.environ.get("DB_PORT", "5432")),
-            admin_user=os.environ.get("DB_ADMIN_USER", "postgres"),
-            admin_password=os.environ.get("DB_ADMIN_PASSWORD", ""),
-        )
-
-    # 3. No env vars - use first cluster in the list
-    if clusters:
-        first_cluster = next(iter(clusters.values()))
-        logger.info(f"Using first configured cluster: {first_cluster.name}")
-        return first_cluster
+    # 2. No name specified - use the default cluster
+    default_cluster = get_default_cluster()
+    if default_cluster:
+        logger.info(f"Using default cluster: {default_cluster.name}")
+        return default_cluster
 
     raise ValueError(
-        "No PostgreSQL cluster available: no cluster specified, no DB_HOST env var, "
-        "and no clusters configured in postgres-clusters secret"
+        "No PostgreSQL cluster available: no cluster specified and no default cluster configured. "
+        "Ensure exactly one cluster has 'default: true' in the postgres-clusters secret."
     )
 
 
