@@ -67,11 +67,15 @@ class PVCHandler(ResourceHandler):
     def handle_update(self):
         """Handle updates to the PVC, only allowing size increases.
 
-        This is a simplified implementation that relies on Kubernetes to handle
-        storage quantity parsing and comparison.
+        Only patches the storage request, as other PVC spec fields (storageClassName,
+        accessModes, volumeMode) are immutable after creation.
         """
+        desired_body = self._get_resource_body()
+        desired_size = desired_body.spec.resources.requests.get("storage")
+
+        patch_body = {"spec": {"resources": {"requests": {"storage": desired_size}}}}
         client.CoreV1Api().patch_namespaced_persistent_volume_claim(
             name=self._get_pvc_name(),
             namespace=self.namespace,
-            body=self._get_resource_body(),
+            body=patch_body,
         )

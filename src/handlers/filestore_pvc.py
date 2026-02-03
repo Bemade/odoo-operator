@@ -27,7 +27,7 @@ class FilestorePVC(PVCHandler):
         pvc = client.V1PersistentVolumeClaim(
             metadata=metadata,
             spec=client.V1PersistentVolumeClaimSpec(
-                access_modes=["ReadWriteOnce"],
+                access_modes=["ReadWriteMany"],
                 resources=client.V1ResourceRequirements(requests={"storage": size}),
             ),
         )
