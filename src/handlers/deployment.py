@@ -11,6 +11,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _parse_int_or_string(value: str):
+    """Convert a string value to int or keep as percentage string.
+
+    Kubernetes IntOrString accepts:
+    - Integers: 1, 0
+    - Percentage strings: "25%", "0%"
+    - NOT numeric strings like "1" or "0"
+
+    This function converts numeric strings to integers while preserving
+    percentage strings as-is.
+    """
+    if not isinstance(value, str):
+        return value
+    if value.endswith("%"):
+        return value  # Keep as percentage string
+    try:
+        return int(value)  # Convert to integer
+    except ValueError:
+        return value  # Keep as-is if not a number
+
+
 class Deployment(ResourceHandler):
     """Manages the Odoo Deployment."""
 
@@ -46,14 +67,16 @@ class Deployment(ResourceHandler):
                 "rollingUpdate", {}
             )
 
+            max_unavailable = rolling_update_spec.get(
+                "maxUnavailable",
+                default_rolling_update.get("maxUnavailable", "25%"),
+            )
+            max_surge = rolling_update_spec.get(
+                "maxSurge", default_rolling_update.get("maxSurge", "25%")
+            )
             rolling_update = client.V1RollingUpdateDeployment(
-                max_unavailable=rolling_update_spec.get(
-                    "maxUnavailable",
-                    default_rolling_update.get("maxUnavailable", "25%"),
-                ),
-                max_surge=rolling_update_spec.get(
-                    "maxSurge", default_rolling_update.get("maxSurge", "25%")
-                ),
+                max_unavailable=_parse_int_or_string(max_unavailable),
+                max_surge=_parse_int_or_string(max_surge),
             )
             strategy.rolling_update = rolling_update
 
