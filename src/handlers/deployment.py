@@ -36,7 +36,10 @@ class Deployment(ResourceHandler):
         strategy = client.V1DeploymentStrategy(type=strategy_type)
 
         # Add rollingUpdate configuration if strategy is RollingUpdate
-        if strategy_type == "RollingUpdate":
+        # Explicitly set to None for Recreate to clear any existing config
+        if strategy_type == "Recreate":
+            strategy.rolling_update = None
+        elif strategy_type == "RollingUpdate":
             # Get rolling update config from spec first, then defaults
             rolling_update_spec = strategy_spec.get("rollingUpdate", {})
             default_rolling_update = self.defaults.get("deploymentStrategy", {}).get(
