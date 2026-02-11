@@ -39,158 +39,161 @@ import (
 	bemadev1alpha1 "github.com/bemade/odoo-operator/operator/api/v1alpha1"
 )
 
-// OdooInitJobReconciler reconciles a OdooInitJob object
-type OdooInitJobReconciler struct {
+// OdooUpgradeJobReconciler reconciles a OdooUpgradeJob object.
+type OdooUpgradeJobReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	HTTPClient *http.Client
 }
 
-// +kubebuilder:rbac:groups=bemade.org,resources=odooinitjobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=bemade.org,resources=odooinitjobs/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=bemade.org,resources=odooinitjobs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=bemade.org,resources=odooupgradejobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=bemade.org,resources=odooupgradejobs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=bemade.org,resources=odooupgradejobs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=bemade.org,resources=odooinstances,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;patch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get
 
-func (r *OdooInitJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *OdooUpgradeJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// Fetch the OdooInitJob
-	var initJob bemadev1alpha1.OdooInitJob
-	if err := r.Get(ctx, req.NamespacedName, &initJob); err != nil {
-		// Not found means it was deleted — nothing to do
+	var upgradeJob bemadev1alpha1.OdooUpgradeJob
+	if err := r.Get(ctx, req.NamespacedName, &upgradeJob); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Terminal states — nothing further to reconcile
-	if initJob.Status.Phase == bemadev1alpha1.PhaseCompleted ||
-		initJob.Status.Phase == bemadev1alpha1.PhaseFailed {
+	if upgradeJob.Status.Phase == bemadev1alpha1.PhaseCompleted ||
+		upgradeJob.Status.Phase == bemadev1alpha1.PhaseFailed {
 		return ctrl.Result{}, nil
 	}
 
-	// No job created yet — this is a fresh OdooInitJob
-	if initJob.Status.JobName == "" {
-		return r.startJob(ctx, &initJob)
+	// Respect scheduledTime — wait until the scheduled moment arrives.
+	if upgradeJob.Spec.ScheduledTime != nil && time.Now().Before(upgradeJob.Spec.ScheduledTime.Time) {
+		waitFor := time.Until(upgradeJob.Spec.ScheduledTime.Time)
+		log.Info("upgrade scheduled in the future, requeueing", "in", waitFor)
+		return ctrl.Result{RequeueAfter: waitFor}, nil
 	}
 
-	// Job was created — check its current state
-	log.Info("checking job status", "job", initJob.Status.JobName)
-	return r.syncJobStatus(ctx, &initJob)
+	if upgradeJob.Status.JobName == "" {
+		return r.startJob(ctx, &upgradeJob)
+	}
+
+	log.Info("checking upgrade job status", "job", upgradeJob.Status.JobName)
+	return r.syncJobStatus(ctx, &upgradeJob)
 }
 
-// startJob looks up the referenced OdooInstance, scales it down, creates the
-// init Job, and sets status to Running.
-func (r *OdooInitJobReconciler) startJob(ctx context.Context, initJob *bemadev1alpha1.OdooInitJob) (ctrl.Result, error) {
+func (r *OdooUpgradeJobReconciler) startJob(ctx context.Context, upgradeJob *bemadev1alpha1.OdooUpgradeJob) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	instanceNS := initJob.Spec.OdooInstanceRef.Namespace
+	instanceNS := upgradeJob.Spec.OdooInstanceRef.Namespace
 	if instanceNS == "" {
-		instanceNS = initJob.Namespace
+		instanceNS = upgradeJob.Namespace
 	}
-	instanceName := initJob.Spec.OdooInstanceRef.Name
+	instanceName := upgradeJob.Spec.OdooInstanceRef.Name
 
 	var odooInstance bemadev1alpha1.OdooInstance
 	if err := r.Get(ctx, types.NamespacedName{Name: instanceName, Namespace: instanceNS}, &odooInstance); err != nil {
 		if errors.IsNotFound(err) {
-			return r.setFailed(ctx, initJob, fmt.Sprintf("OdooInstance %s not found", instanceName))
+			return r.setFailed(ctx, upgradeJob, fmt.Sprintf("OdooInstance %s not found", instanceName))
 		}
 		return ctrl.Result{}, err
 	}
 
-	// Scale the deployment to 0 before initialising
+	// Record original replicas so we can restore after completion.
+	originalReplicas := odooInstance.Spec.Replicas
+	if originalReplicas == 0 {
+		originalReplicas = 1
+	}
+
 	if err := scaleDeployment(ctx, r.Client, instanceName, instanceNS, 0); err != nil {
 		log.Error(err, "failed to scale down deployment — proceeding anyway", "instance", instanceName)
 	}
 
-	job, err := r.buildInitJob(initJob, &odooInstance)
+	job, err := r.buildUpgradeJob(upgradeJob, &odooInstance)
 	if err != nil {
-		return r.setFailed(ctx, initJob, fmt.Sprintf("failed to build job: %v", err))
+		return r.setFailed(ctx, upgradeJob, fmt.Sprintf("failed to build job: %v", err))
 	}
 
 	if err := r.Create(ctx, job); err != nil {
-		return ctrl.Result{}, fmt.Errorf("creating init job: %w", err)
+		return ctrl.Result{}, fmt.Errorf("creating upgrade job: %w", err)
 	}
 
-	log.Info("created init job", "job", job.Name)
+	log.Info("created upgrade job", "job", job.Name)
 
-	patch := client.MergeFrom(initJob.DeepCopy())
-	initJob.Status.Phase = bemadev1alpha1.PhaseRunning
-	initJob.Status.JobName = job.Name
+	patch := client.MergeFrom(upgradeJob.DeepCopy())
+	upgradeJob.Status.Phase = bemadev1alpha1.PhaseRunning
+	upgradeJob.Status.JobName = job.Name
+	upgradeJob.Status.OriginalReplicas = originalReplicas
 	now := metav1.Now()
-	initJob.Status.StartTime = &now
-	if err := r.Status().Patch(ctx, initJob, patch); err != nil {
+	upgradeJob.Status.StartTime = &now
+	if err := r.Status().Patch(ctx, upgradeJob, patch); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status to Running: %w", err)
 	}
 
 	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 }
 
-// syncJobStatus fetches the underlying Job and updates OdooInitJob status accordingly.
-func (r *OdooInitJobReconciler) syncJobStatus(ctx context.Context, initJob *bemadev1alpha1.OdooInitJob) (ctrl.Result, error) {
+func (r *OdooUpgradeJobReconciler) syncJobStatus(ctx context.Context, upgradeJob *bemadev1alpha1.OdooUpgradeJob) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	var job batchv1.Job
-	if err := r.Get(ctx, types.NamespacedName{Name: initJob.Status.JobName, Namespace: initJob.Namespace}, &job); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: upgradeJob.Status.JobName, Namespace: upgradeJob.Namespace}, &job); err != nil {
 		if errors.IsNotFound(err) {
-			log.Info("job not found, may have been deleted", "job", initJob.Status.JobName)
+			log.Info("job not found, may have been deleted", "job", upgradeJob.Status.JobName)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
 	if job.Status.Succeeded > 0 {
-		log.Info("init job succeeded")
-		return ctrl.Result{}, r.finalise(ctx, initJob, bemadev1alpha1.PhaseCompleted, "")
+		log.Info("upgrade job succeeded")
+		return ctrl.Result{}, r.finalise(ctx, upgradeJob, bemadev1alpha1.PhaseCompleted, "")
 	}
-
 	if job.Status.Failed > 0 {
-		log.Info("init job failed")
-		return ctrl.Result{}, r.finalise(ctx, initJob, bemadev1alpha1.PhaseFailed, "init job failed")
+		log.Info("upgrade job failed")
+		return ctrl.Result{}, r.finalise(ctx, upgradeJob, bemadev1alpha1.PhaseFailed, "upgrade job failed")
 	}
 
-	// Still running — the Owns() watch will trigger reconciliation when it
-	// completes, but requeue as a safety net
 	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 }
 
-// finalise sets a terminal status, scales the instance back up, and fires the webhook.
-func (r *OdooInitJobReconciler) finalise(ctx context.Context, initJob *bemadev1alpha1.OdooInitJob, phase bemadev1alpha1.Phase, message string) error {
-	patch := client.MergeFrom(initJob.DeepCopy())
-	initJob.Status.Phase = phase
-	initJob.Status.Message = message
+func (r *OdooUpgradeJobReconciler) finalise(ctx context.Context, upgradeJob *bemadev1alpha1.OdooUpgradeJob, phase bemadev1alpha1.Phase, message string) error {
+	patch := client.MergeFrom(upgradeJob.DeepCopy())
+	upgradeJob.Status.Phase = phase
+	upgradeJob.Status.Message = message
 	now := metav1.Now()
-	initJob.Status.CompletionTime = &now
-	if err := r.Status().Patch(ctx, initJob, patch); err != nil {
+	upgradeJob.Status.CompletionTime = &now
+	if err := r.Status().Patch(ctx, upgradeJob, patch); err != nil {
 		return fmt.Errorf("updating terminal status: %w", err)
 	}
 
-	instanceNS := initJob.Spec.OdooInstanceRef.Namespace
+	instanceNS := upgradeJob.Spec.OdooInstanceRef.Namespace
 	if instanceNS == "" {
-		instanceNS = initJob.Namespace
+		instanceNS = upgradeJob.Namespace
 	}
-	if err := r.scaleInstanceBackUp(ctx, initJob.Spec.OdooInstanceRef.Name, instanceNS); err != nil {
+	replicas := upgradeJob.Status.OriginalReplicas
+	if replicas == 0 {
+		replicas = 1
+	}
+	if err := scaleDeployment(ctx, r.Client, upgradeJob.Spec.OdooInstanceRef.Name, instanceNS, replicas); err != nil {
 		logf.FromContext(ctx).Error(err, "failed to scale instance back up")
 	}
 
-	if initJob.Spec.Webhook != nil {
-		r.notifyWebhook(ctx, initJob, phase)
+	if upgradeJob.Spec.Webhook != nil {
+		r.notifyWebhook(ctx, upgradeJob, phase)
 	}
 
 	return nil
 }
 
-// setFailed is a convenience wrapper for immediate failure before a job is created.
-func (r *OdooInitJobReconciler) setFailed(ctx context.Context, initJob *bemadev1alpha1.OdooInitJob, message string) (ctrl.Result, error) {
-	patch := client.MergeFrom(initJob.DeepCopy())
-	initJob.Status.Phase = bemadev1alpha1.PhaseFailed
-	initJob.Status.Message = message
-	return ctrl.Result{}, r.Status().Patch(ctx, initJob, patch)
+func (r *OdooUpgradeJobReconciler) setFailed(ctx context.Context, upgradeJob *bemadev1alpha1.OdooUpgradeJob, message string) (ctrl.Result, error) {
+	patch := client.MergeFrom(upgradeJob.DeepCopy())
+	upgradeJob.Status.Phase = bemadev1alpha1.PhaseFailed
+	upgradeJob.Status.Message = message
+	return ctrl.Result{}, r.Status().Patch(ctx, upgradeJob, patch)
 }
 
-// buildInitJob constructs the batch/v1 Job that runs `odoo -i <modules>`.
-func (r *OdooInitJobReconciler) buildInitJob(initJob *bemadev1alpha1.OdooInitJob, odooInstance *bemadev1alpha1.OdooInstance) (*batchv1.Job, error) {
+func (r *OdooUpgradeJobReconciler) buildUpgradeJob(upgradeJob *bemadev1alpha1.OdooUpgradeJob, odooInstance *bemadev1alpha1.OdooInstance) (*batchv1.Job, error) {
 	instanceName := odooInstance.Name
 	instanceUID := string(odooInstance.UID)
 
@@ -207,22 +210,33 @@ func (r *OdooInitJobReconciler) buildInitJob(initJob *bemadev1alpha1.OdooInitJob
 	dbSecretName := fmt.Sprintf("%s-odoo-user", instanceName)
 	dbName := fmt.Sprintf("odoo_%s", sanitiseUID(instanceUID))
 
-	modules := initJob.Spec.Modules
-	if len(modules) == 0 {
-		modules = []string{"base"}
+	// Build -u and -i argument lists.
+	var args []string
+	args = append(args, "-d", dbName, "--no-http", "--stop-after-init")
+	if len(upgradeJob.Spec.Modules) > 0 {
+		args = append(args, "-u", strings.Join(upgradeJob.Spec.Modules, ","))
+	}
+	if len(upgradeJob.Spec.ModulesInstall) > 0 {
+		args = append(args, "-i", strings.Join(upgradeJob.Spec.ModulesInstall, ","))
+	}
+	// Default to upgrading all installed modules if neither list is specified.
+	if len(upgradeJob.Spec.Modules) == 0 && len(upgradeJob.Spec.ModulesInstall) == 0 {
+		args = append(args, "-u", "all")
 	}
 
 	ttl := int32(900)
 	backoffLimit := int32(0)
+	activeDeadline := int64(3600) // 1 hour max
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: fmt.Sprintf("%s-", initJob.Name),
-			Namespace:    initJob.Namespace,
+			GenerateName: fmt.Sprintf("%s-", upgradeJob.Name),
+			Namespace:    upgradeJob.Namespace,
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            &backoffLimit,
 			TTLSecondsAfterFinished: &ttl,
+			ActiveDeadlineSeconds:   &activeDeadline,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					RestartPolicy:    corev1.RestartPolicyNever,
@@ -255,10 +269,10 @@ func (r *OdooInitJobReconciler) buildInitJob(initJob *bemadev1alpha1.OdooInitJob
 					},
 					Containers: []corev1.Container{
 						{
-							Name:    "init",
+							Name:    "upgrade",
 							Image:   image,
 							Command: []string{"/entrypoint.sh", "odoo"},
-							Args:    []string{"-i", strings.Join(modules, ","), "-d", dbName, "--no-http", "--stop-after-init"},
+							Args:    args,
 							Env: []corev1.EnvVar{
 								{
 									Name: "USER",
@@ -290,47 +304,34 @@ func (r *OdooInitJobReconciler) buildInitJob(initJob *bemadev1alpha1.OdooInitJob
 		},
 	}
 
-	if err := controllerutil.SetControllerReference(initJob, job, r.Scheme); err != nil {
+	if err := controllerutil.SetControllerReference(upgradeJob, job, r.Scheme); err != nil {
 		return nil, err
 	}
 	return job, nil
 }
 
-// scaleInstanceBackUp reads desired replicas from the OdooInstance and scales the Deployment back up.
-func (r *OdooInitJobReconciler) scaleInstanceBackUp(ctx context.Context, instanceName, instanceNS string) error {
-	var odooInstance bemadev1alpha1.OdooInstance
-	if err := r.Get(ctx, types.NamespacedName{Name: instanceName, Namespace: instanceNS}, &odooInstance); err != nil {
-		return err
-	}
-	replicas := odooInstance.Spec.Replicas
-	if replicas == 0 {
-		replicas = 1
-	}
-	return scaleDeployment(ctx, r.Client, instanceName, instanceNS, replicas)
-}
-
-// notifyWebhook POSTs a status payload to the configured webhook URL.
-func (r *OdooInitJobReconciler) notifyWebhook(ctx context.Context, initJob *bemadev1alpha1.OdooInitJob, phase bemadev1alpha1.Phase) {
+func (r *OdooUpgradeJobReconciler) notifyWebhook(ctx context.Context, upgradeJob *bemadev1alpha1.OdooUpgradeJob, phase bemadev1alpha1.Phase) {
 	log := logf.FromContext(ctx)
-	wh := initJob.Spec.Webhook
+	wh := upgradeJob.Spec.Webhook
 
 	token := wh.Token
 	if token == "" && wh.SecretTokenSecretRef != nil {
 		var secret corev1.Secret
 		if err := r.Get(ctx, types.NamespacedName{
 			Name:      wh.SecretTokenSecretRef.Name,
-			Namespace: initJob.Namespace,
+			Namespace: upgradeJob.Namespace,
 		}, &secret); err == nil {
 			token = string(secret.Data[wh.SecretTokenSecretRef.Key])
 		}
 	}
 
 	payload, _ := json.Marshal(map[string]any{
-		"initJob":        initJob.Name,
-		"namespace":      initJob.Namespace,
+		"upgradeJob":     upgradeJob.Name,
+		"namespace":      upgradeJob.Namespace,
 		"phase":          phase,
-		"targetInstance": initJob.Spec.OdooInstanceRef.Name,
-		"modules":        initJob.Spec.Modules,
+		"targetInstance": upgradeJob.Spec.OdooInstanceRef.Name,
+		"modules":        upgradeJob.Spec.Modules,
+		"modulesInstall": upgradeJob.Spec.ModulesInstall,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wh.URL, bytes.NewReader(payload))
@@ -356,14 +357,10 @@ func (r *OdooInitJobReconciler) notifyWebhook(ctx context.Context, initJob *bema
 	log.Info("webhook notification sent", "status", resp.StatusCode)
 }
 
-// SetupWithManager sets up the controller with the Manager.
-func (r *OdooInitJobReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *OdooUpgradeJobReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&bemadev1alpha1.OdooInitJob{}).
-		// Trigger reconciliation whenever an owned Job changes (e.g. completes)
+		For(&bemadev1alpha1.OdooUpgradeJob{}).
 		Owns(&batchv1.Job{}).
-		Named("odooinitjob").
+		Named("odooupgradejob").
 		Complete(r)
 }
-
-// ptr, sanitiseUID and scaleDeployment are defined in helpers.go

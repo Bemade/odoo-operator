@@ -36,7 +36,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	bemadev1alpha1 "github.com/bemade/odoo-operator/operator/api/v1alpha1"
-	bemadev1alpha2 "github.com/bemade/odoo-operator/operator/api/v1alpha2"
 	"github.com/bemade/odoo-operator/operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -50,7 +49,6 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(bemadev1alpha1.AddToScheme(scheme))
-	utilruntime.Must(bemadev1alpha2.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -188,10 +186,32 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.OdooInstanceReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: os.Getenv("OPERATOR_NAMESPACE"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OdooInstance")
+		os.Exit(1)
+	}
+	if err := (&controller.OdooBackupJobReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "OdooInstance")
+		setupLog.Error(err, "unable to create controller", "controller", "OdooBackupJob")
+		os.Exit(1)
+	}
+	if err := (&controller.OdooRestoreJobReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OdooRestoreJob")
+		os.Exit(1)
+	}
+	if err := (&controller.OdooUpgradeJobReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OdooUpgradeJob")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

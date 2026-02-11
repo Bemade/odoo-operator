@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha2
+package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
@@ -143,9 +143,9 @@ type OdooInstanceSpec struct {
 	// adminPassword is the Odoo database administrator password.
 	AdminPassword string `json:"adminPassword"`
 
-	// replicas is the number of Odoo pod replicas to run.
+	// replicas is the number of Odoo pod replicas to run. Set to 0 to stop the instance.
 	// +kubebuilder:default=1
-	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Minimum=0
 	Replicas int32 `json:"replicas"`
 
 	// ingress configures the Ingress resource for this instance.
@@ -185,13 +185,23 @@ type OdooInstanceSpec struct {
 }
 
 // OdooInstancePhase represents the lifecycle state of an OdooInstance.
-// +kubebuilder:validation:Enum=Running;Upgrading;Restoring
+// +kubebuilder:validation:Enum=Provisioning;Uninitialized;Initializing;InitFailed;Starting;Running;Degraded;Stopped;Upgrading;UpgradeFailed;Restoring;RestoreFailed;Error
 type OdooInstancePhase string
 
 const (
-	OdooInstancePhaseRunning   OdooInstancePhase = "Running"
-	OdooInstancePhaseUpgrading OdooInstancePhase = "Upgrading"
-	OdooInstancePhaseRestoring OdooInstancePhase = "Restoring"
+	OdooInstancePhaseProvisioning  OdooInstancePhase = "Provisioning"
+	OdooInstancePhaseUninitialized OdooInstancePhase = "Uninitialized"
+	OdooInstancePhaseInitializing  OdooInstancePhase = "Initializing"
+	OdooInstancePhaseInitFailed    OdooInstancePhase = "InitFailed"
+	OdooInstancePhaseStarting      OdooInstancePhase = "Starting"
+	OdooInstancePhaseRunning       OdooInstancePhase = "Running"
+	OdooInstancePhaseDegraded      OdooInstancePhase = "Degraded"
+	OdooInstancePhaseStopped       OdooInstancePhase = "Stopped"
+	OdooInstancePhaseUpgrading     OdooInstancePhase = "Upgrading"
+	OdooInstancePhaseUpgradeFailed OdooInstancePhase = "UpgradeFailed"
+	OdooInstancePhaseRestoring     OdooInstancePhase = "Restoring"
+	OdooInstancePhaseRestoreFailed OdooInstancePhase = "RestoreFailed"
+	OdooInstancePhaseError         OdooInstancePhase = "Error"
 )
 
 // OdooInstanceStatus defines the observed state of OdooInstance.
@@ -207,6 +217,15 @@ type OdooInstanceStatus struct {
 	// ready is true when the instance is fully functional and all pods are ready.
 	// +optional
 	Ready bool `json:"ready,omitempty"`
+
+	// readyReplicas is the number of Odoo pods currently ready.
+	// +optional
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// dbInitialized is true once a completed OdooInitJob has been observed for this instance.
+	// Once true, it is never cleared — even if the InitJob is deleted.
+	// +optional
+	DBInitialized bool `json:"dbInitialized,omitempty"`
 
 	// url is the primary URL at which the instance is reachable.
 	// +optional
@@ -226,9 +245,10 @@ type OdooInstanceStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.readyReplicas
 // +kubebuilder:resource:shortName=odoo
 // +kubebuilder:printcolumn:name="Image",type=string,JSONPath=`.spec.image`
-// +kubebuilder:printcolumn:name="Replicas",type=integer,JSONPath=`.spec.replicas`
+// +kubebuilder:printcolumn:name="Replicas",type=string,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.status.url`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

@@ -20,9 +20,9 @@ spec:
     - jsonPath: .spec.image
       name: Image
       type: string
-    - jsonPath: .spec.replicas
+    - jsonPath: .status.readyReplicas
       name: Replicas
-      type: integer
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -32,7 +32,7 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha2
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: OdooInstance is the Schema for the odooinstances API.
@@ -143,9 +143,10 @@ spec:
                 type: object
               replicas:
                 default: 1
-                description: replicas is the number of Odoo pod replicas to run.
+                description: replicas is the number of Odoo pod replicas to run. Set
+                  to 0 to stop the instance.
                 format: int32
-                minimum: 1
+                minimum: 0
                 type: integer
               resources:
                 description: resources sets CPU and memory requests and limits for
@@ -329,6 +330,11 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              dbInitialized:
+                description: |-
+                  dbInitialized is true once a completed OdooInitJob has been observed for this instance.
+                  Once true, it is never cleared — even if the InitJob is deleted.
+                type: boolean
               lastBackup:
                 description: lastBackup is the timestamp of the most recent successful
                   backup.
@@ -341,14 +347,28 @@ spec:
               phase:
                 description: phase is the current lifecycle phase of the instance.
                 enum:
+                - Provisioning
+                - Uninitialized
+                - Initializing
+                - InitFailed
+                - Starting
                 - Running
+                - Degraded
+                - Stopped
                 - Upgrading
+                - UpgradeFailed
                 - Restoring
+                - RestoreFailed
+                - Error
                 type: string
               ready:
                 description: ready is true when the instance is fully functional and
                   all pods are ready.
                 type: boolean
+              readyReplicas:
+                description: readyReplicas is the number of Odoo pods currently ready.
+                format: int32
+                type: integer
               url:
                 description: url is the primary URL at which the instance is reachable.
                 type: string
@@ -359,4 +379,7 @@ spec:
     served: true
     storage: true
     subresources:
+      scale:
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.readyReplicas
       status: {}

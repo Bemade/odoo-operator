@@ -34,7 +34,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	bemadev1alpha1 "github.com/bemade/odoo-operator/operator/api/v1alpha1"
-	bemadev1alpha2 "github.com/bemade/odoo-operator/operator/api/v1alpha2"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -64,7 +63,6 @@ var _ = BeforeSuite(func() {
 	err = bemadev1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = bemadev1alpha2.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme

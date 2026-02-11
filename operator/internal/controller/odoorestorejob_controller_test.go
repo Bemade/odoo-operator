@@ -35,31 +35,26 @@ import (
 	bemadev1alpha1 "github.com/bemade/odoo-operator/operator/api/v1alpha1"
 )
 
-// testCounter provides unique resource names across tests in the same suite run.
-var testCounter int
-
-var _ = Describe("OdooInitJob Controller", func() {
+var _ = Describe("OdooRestoreJob Controller", func() {
 	var (
 		ctx        context.Context
-		reconciler *OdooInitJobReconciler
+		reconciler *OdooRestoreJobReconciler
 		ns         string
-		iName      string // OdooInstance name for this test
-		jName      string // OdooInitJob name for this test
+		iName      string
+		jName      string
 	)
 
 	BeforeEach(func() {
 		testCounter++
 		ctx = context.Background()
 		ns = "default"
-		iName = fmt.Sprintf("test-instance-%d", testCounter)
-		jName = fmt.Sprintf("test-initjob-%d", testCounter)
-		reconciler = &OdooInitJobReconciler{
+		iName = fmt.Sprintf("restore-instance-%d", testCounter)
+		jName = fmt.Sprintf("restore-job-%d", testCounter)
+		reconciler = &OdooRestoreJobReconciler{
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
 		}
 	})
-
-	// --- helpers ---
 
 	reconcileJob := func() (reconcile.Result, error) {
 		return reconciler.Reconcile(ctx, reconcile.Request{
@@ -67,35 +62,40 @@ var _ = Describe("OdooInitJob Controller", func() {
 		})
 	}
 
-	getInitJob := func() *bemadev1alpha1.OdooInitJob {
-		obj := &bemadev1alpha1.OdooInitJob{}
+	getRestoreJob := func() *bemadev1alpha1.OdooRestoreJob {
+		obj := &bemadev1alpha1.OdooRestoreJob{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: jName, Namespace: ns}, obj)).To(Succeed())
 		return obj
 	}
 
-	createOdooInstance := func(replicas int32) *bemadev1alpha1.OdooInstance {
+	createOdooInstance := func() *bemadev1alpha1.OdooInstance {
 		obj := &bemadev1alpha1.OdooInstance{
 			ObjectMeta: metav1.ObjectMeta{Name: iName, Namespace: ns},
 			Spec: bemadev1alpha1.OdooInstanceSpec{
 				Image:         "odoo:18.0",
 				AdminPassword: "admin",
-				Replicas:      replicas,
-				Ingress: bemadev1alpha1.IngressSpec{
-					Hosts:  []string{"test.example.com"},
-					Issuer: "letsencrypt",
-				},
+				Replicas:      1,
+				Ingress:       bemadev1alpha1.IngressSpec{Hosts: []string{"test.example.com"}, Issuer: "letsencrypt"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, obj)).To(Succeed())
 		return obj
 	}
 
-	createInitJob := func(mods []string, mutators ...func(*bemadev1alpha1.OdooInitJob)) *bemadev1alpha1.OdooInitJob {
-		obj := &bemadev1alpha1.OdooInitJob{
+	createRestoreJob := func(mutators ...func(*bemadev1alpha1.OdooRestoreJob)) *bemadev1alpha1.OdooRestoreJob {
+		obj := &bemadev1alpha1.OdooRestoreJob{
 			ObjectMeta: metav1.ObjectMeta{Name: jName, Namespace: ns},
-			Spec: bemadev1alpha1.OdooInitJobSpec{
+			Spec: bemadev1alpha1.OdooRestoreJobSpec{
 				OdooInstanceRef: bemadev1alpha1.OdooInstanceRef{Name: iName},
-				Modules:         mods,
+				Source: bemadev1alpha1.RestoreSource{
+					Type: bemadev1alpha1.RestoreSourceTypeS3,
+					S3: &bemadev1alpha1.S3Config{
+						Bucket:    "test-bucket",
+						ObjectKey: "backups/test.zip",
+						Endpoint:  "https://s3.example.com",
+					},
+				},
+				Format: bemadev1alpha1.BackupFormatZip,
 			},
 		}
 		for _, fn := range mutators {
@@ -103,13 +103,6 @@ var _ = Describe("OdooInitJob Controller", func() {
 		}
 		Expect(k8sClient.Create(ctx, obj)).To(Succeed())
 		return obj
-	}
-
-	setInitJobStatus := func(phase bemadev1alpha1.Phase) {
-		obj := getInitJob()
-		patch := client.MergeFrom(obj.DeepCopy())
-		obj.Status.Phase = phase
-		Expect(k8sClient.Status().Patch(ctx, obj, patch)).To(Succeed())
 	}
 
 	getChildJob := func(jobName string) *batchv1.Job {
@@ -126,27 +119,25 @@ var _ = Describe("OdooInitJob Controller", func() {
 		Expect(k8sClient.Status().Patch(ctx, job, patch)).To(Succeed())
 	}
 
-	// --- tests ---
-
 	Describe("terminal state short-circuit", func() {
 		It("does nothing when phase is already Completed", func() {
-			createInitJob([]string{"base"})
-			setInitJobStatus(bemadev1alpha1.PhaseCompleted)
+			createRestoreJob()
+			obj := getRestoreJob()
+			patch := client.MergeFrom(obj.DeepCopy())
+			obj.Status.Phase = bemadev1alpha1.PhaseCompleted
+			Expect(k8sClient.Status().Patch(ctx, obj, patch)).To(Succeed())
 
 			result, err := reconcileJob()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
-
-			// No child Job should have been created
-			jobs := &batchv1.JobList{}
-			Expect(k8sClient.List(ctx, jobs, client.InNamespace(ns),
-				client.MatchingLabels{"app": jName})).To(Succeed())
-			Expect(jobs.Items).To(BeEmpty())
 		})
 
 		It("does nothing when phase is already Failed", func() {
-			createInitJob([]string{"base"})
-			setInitJobStatus(bemadev1alpha1.PhaseFailed)
+			createRestoreJob()
+			obj := getRestoreJob()
+			patch := client.MergeFrom(obj.DeepCopy())
+			obj.Status.Phase = bemadev1alpha1.PhaseFailed
+			Expect(k8sClient.Status().Patch(ctx, obj, patch)).To(Succeed())
 
 			result, err := reconcileJob()
 			Expect(err).NotTo(HaveOccurred())
@@ -155,128 +146,109 @@ var _ = Describe("OdooInitJob Controller", func() {
 	})
 
 	Describe("when the referenced OdooInstance does not exist", func() {
-		It("sets status to Failed with a descriptive message", func() {
-			createInitJob([]string{"base"})
-
+		It("sets status to Failed", func() {
+			createRestoreJob()
 			_, err := reconcileJob()
 			Expect(err).NotTo(HaveOccurred())
 
-			updated := getInitJob()
-			Expect(updated.Status.Phase).To(Equal(bemadev1alpha1.PhaseFailed))
-			Expect(updated.Status.Message).To(ContainSubstring(iName))
+			Expect(getRestoreJob().Status.Phase).To(Equal(bemadev1alpha1.PhaseFailed))
+			Expect(getRestoreJob().Status.Message).To(ContainSubstring(iName))
 		})
 	})
 
-	Describe("fresh OdooInitJob with an existing OdooInstance", func() {
+	Describe("fresh OdooRestoreJob with an existing OdooInstance", func() {
 		BeforeEach(func() {
-			createOdooInstance(2)
+			createOdooInstance()
 		})
 
 		It("creates a child Job and sets status to Running", func() {
-			createInitJob([]string{"base"})
+			createRestoreJob()
 
 			result, err := reconcileJob()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(10 * time.Second))
 
-			updated := getInitJob()
+			updated := getRestoreJob()
 			Expect(updated.Status.Phase).To(Equal(bemadev1alpha1.PhaseRunning))
 			Expect(updated.Status.JobName).NotTo(BeEmpty())
 			Expect(updated.Status.StartTime).NotTo(BeNil())
-
-			// The child Job must exist in the cluster
-			_ = getChildJob(updated.Status.JobName)
 		})
 
-		It("uses the image from the OdooInstance spec", func() {
-			createInitJob([]string{"base"})
+		It("uses a downloader init container and a restore init container for S3 source", func() {
+			createRestoreJob()
 			_, err := reconcileJob()
 			Expect(err).NotTo(HaveOccurred())
 
-			updated := getInitJob()
+			updated := getRestoreJob()
 			job := getChildJob(updated.Status.JobName)
-			Expect(job.Spec.Template.Spec.Containers[0].Image).To(Equal("odoo:18.0"))
+			Expect(job.Spec.Template.Spec.InitContainers).To(HaveLen(2))
+			Expect(job.Spec.Template.Spec.InitContainers[0].Name).To(Equal("downloader"))
+			Expect(job.Spec.Template.Spec.InitContainers[1].Name).To(Equal("restore"))
+			// Sentinel main container
+			Expect(job.Spec.Template.Spec.Containers[0].Name).To(Equal("done"))
 		})
 
-		It("passes modules as a comma-separated -i argument", func() {
-			createInitJob([]string{"sale", "purchase", "stock"})
+		It("uses only a restore init container when source type is not S3", func() {
+			createRestoreJob(func(j *bemadev1alpha1.OdooRestoreJob) {
+				j.Spec.Source = bemadev1alpha1.RestoreSource{
+					Type: bemadev1alpha1.RestoreSourceTypeOdoo,
+					Odoo: &bemadev1alpha1.OdooLiveSource{
+						URL: "https://source.example.com",
+					},
+				}
+			})
 			_, err := reconcileJob()
 			Expect(err).NotTo(HaveOccurred())
 
-			updated := getInitJob()
+			updated := getRestoreJob()
 			job := getChildJob(updated.Status.JobName)
-			args := job.Spec.Template.Spec.Containers[0].Args
-			Expect(args).To(ContainElement("sale,purchase,stock"))
+			// Only the restore init container — no downloader for Odoo live source
+			Expect(job.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+			Expect(job.Spec.Template.Spec.InitContainers[0].Name).To(Equal("restore"))
 		})
 
-		It("defaults to [base] when no modules are specified", func() {
-			createInitJob(nil)
+		It("sets the OdooRestoreJob as owner of the child Job", func() {
+			createRestoreJob()
 			_, err := reconcileJob()
 			Expect(err).NotTo(HaveOccurred())
 
-			updated := getInitJob()
-			job := getChildJob(updated.Status.JobName)
-			args := job.Spec.Template.Spec.Containers[0].Args
-			Expect(args).To(ContainElement("base"))
-		})
-
-		It("sets the OdooInitJob as owner of the child Job", func() {
-			createInitJob([]string{"base"})
-			_, err := reconcileJob()
-			Expect(err).NotTo(HaveOccurred())
-
-			updated := getInitJob()
+			updated := getRestoreJob()
 			job := getChildJob(updated.Status.JobName)
 			Expect(job.OwnerReferences).To(HaveLen(1))
 			Expect(job.OwnerReferences[0].Name).To(Equal(jName))
-			Expect(job.OwnerReferences[0].Kind).To(Equal("OdooInitJob"))
-		})
-
-		It("is idempotent — second reconcile while Running does not create another Job", func() {
-			createInitJob([]string{"base"})
-			_, err := reconcileJob()
-			Expect(err).NotTo(HaveOccurred())
-
-			firstJob := getInitJob().Status.JobName
-
-			// Reconcile again without the job completing
-			_, err = reconcileJob()
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(getInitJob().Status.JobName).To(Equal(firstJob))
 		})
 
 		Context("when the child Job succeeds", func() {
-			It("sets status to Completed with a CompletionTime", func() {
-				createInitJob([]string{"base"})
+			It("sets status to Completed", func() {
+				createRestoreJob()
 				_, err := reconcileJob()
 				Expect(err).NotTo(HaveOccurred())
 
-				jobName := getInitJob().Status.JobName
+				jobName := getRestoreJob().Status.JobName
 				simulateJobResult(jobName, 1, 0)
 
 				_, err = reconcileJob()
 				Expect(err).NotTo(HaveOccurred())
 
-				final := getInitJob()
+				final := getRestoreJob()
 				Expect(final.Status.Phase).To(Equal(bemadev1alpha1.PhaseCompleted))
 				Expect(final.Status.CompletionTime).NotTo(BeNil())
 			})
 		})
 
 		Context("when the child Job fails", func() {
-			It("sets status to Failed with a CompletionTime", func() {
-				createInitJob([]string{"base"})
+			It("sets status to Failed", func() {
+				createRestoreJob()
 				_, err := reconcileJob()
 				Expect(err).NotTo(HaveOccurred())
 
-				jobName := getInitJob().Status.JobName
+				jobName := getRestoreJob().Status.JobName
 				simulateJobResult(jobName, 0, 1)
 
 				_, err = reconcileJob()
 				Expect(err).NotTo(HaveOccurred())
 
-				final := getInitJob()
+				final := getRestoreJob()
 				Expect(final.Status.Phase).To(Equal(bemadev1alpha1.PhaseFailed))
 				Expect(final.Status.CompletionTime).NotTo(BeNil())
 			})
@@ -284,61 +256,36 @@ var _ = Describe("OdooInitJob Controller", func() {
 
 		Context("when a webhook is configured", func() {
 			var (
-				server          *httptest.Server
-				receivedBody    []byte
-				receivedHeaders http.Header
+				server       *httptest.Server
+				receivedBody []byte
 			)
 
 			BeforeEach(func() {
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					receivedHeaders = r.Header
 					receivedBody, _ = io.ReadAll(r.Body)
 					w.WriteHeader(http.StatusOK)
 				}))
 				reconciler.HTTPClient = server.Client()
 			})
 
-			AfterEach(func() {
-				server.Close()
-			})
+			AfterEach(func() { server.Close() })
 
 			It("POSTs to the webhook URL on completion", func() {
-				createInitJob([]string{"base"}, func(j *bemadev1alpha1.OdooInitJob) {
+				createRestoreJob(func(j *bemadev1alpha1.OdooRestoreJob) {
 					j.Spec.Webhook = &bemadev1alpha1.WebhookConfig{URL: server.URL}
 				})
 
 				_, err := reconcileJob()
 				Expect(err).NotTo(HaveOccurred())
 
-				jobName := getInitJob().Status.JobName
+				jobName := getRestoreJob().Status.JobName
 				simulateJobResult(jobName, 1, 0)
 
 				_, err = reconcileJob()
 				Expect(err).NotTo(HaveOccurred())
 
-				Expect(receivedHeaders.Get("Content-Type")).To(Equal("application/json"))
 				Expect(receivedBody).To(ContainSubstring(jName))
 				Expect(receivedBody).To(ContainSubstring(`"phase":"Completed"`))
-			})
-
-			It("includes a Bearer token when configured", func() {
-				createInitJob([]string{"base"}, func(j *bemadev1alpha1.OdooInitJob) {
-					j.Spec.Webhook = &bemadev1alpha1.WebhookConfig{
-						URL:   server.URL,
-						Token: "my-secret-token",
-					}
-				})
-
-				_, err := reconcileJob()
-				Expect(err).NotTo(HaveOccurred())
-
-				jobName := getInitJob().Status.JobName
-				simulateJobResult(jobName, 1, 0)
-
-				_, err = reconcileJob()
-				Expect(err).NotTo(HaveOccurred())
-
-				Expect(receivedHeaders.Get("Authorization")).To(Equal("Bearer my-secret-token"))
 			})
 		})
 	})
