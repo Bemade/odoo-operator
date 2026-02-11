@@ -1,0 +1,58 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - patch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - bemade.org
+  resources:
+  - odooinitjobs
+  - odooinstances
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - bemade.org
+  resources:
+  - odooinitjobs/finalizers
+  - odooinstances/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - bemade.org
+  resources:
+  - odooinitjobs/status
+  - odooinstances/status
+  verbs:
+  - get
+  - patch
+  - update

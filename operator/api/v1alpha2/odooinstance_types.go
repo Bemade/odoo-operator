@@ -1,0 +1,261 @@
+/*
+Copyright 2026 Bemade Inc..
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha2
+
+import (
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// IngressSpec defines how the OdooInstance should be exposed via an Ingress resource.
+type IngressSpec struct {
+	// hosts are the fully qualified domain names at which this instance is reachable.
+	// +kubebuilder:validation:MinItems=1
+	Hosts []string `json:"hosts"`
+
+	// issuer is the name of the cert-manager ClusterIssuer used to issue the TLS certificate.
+	Issuer string `json:"issuer"`
+
+	// class is the IngressClass to use (e.g. "nginx", "traefik").
+	// +optional
+	Class *string `json:"class,omitempty"`
+}
+
+// FilestoreSpec defines persistent storage for the Odoo filestore.
+type FilestoreSpec struct {
+	// storageSize is the PVC size requested for the filestore (e.g. "10Gi").
+	// +optional
+	// +kubebuilder:default="2Gi"
+	StorageSize string `json:"storageSize,omitempty"`
+
+	// storageClass is the StorageClass to use for the filestore PVC.
+	// +optional
+	// +kubebuilder:default="standard"
+	StorageClass string `json:"storageClass,omitempty"`
+}
+
+// DatabaseSpec identifies which PostgreSQL cluster to use for this instance.
+type DatabaseSpec struct {
+	// cluster is the name of the PostgreSQL cluster from the postgres-clusters secret.
+	// Defaults to the cluster marked as default.
+	// +optional
+	Cluster string `json:"cluster,omitempty"`
+}
+
+// DeploymentStrategyType specifies the update strategy for the Odoo Deployment.
+// +kubebuilder:validation:Enum=Recreate;RollingUpdate
+type DeploymentStrategyType string
+
+const (
+	DeploymentStrategyRecreate      DeploymentStrategyType = "Recreate"
+	DeploymentStrategyRollingUpdate DeploymentStrategyType = "RollingUpdate"
+)
+
+// RollingUpdateSpec configures the RollingUpdate deployment strategy parameters.
+type RollingUpdateSpec struct {
+	// maxUnavailable is the maximum number of pods that can be unavailable during the update.
+	// +optional
+	// +kubebuilder:default="25%"
+	MaxUnavailable string `json:"maxUnavailable,omitempty"`
+
+	// maxSurge is the maximum number of additional pods that can be created during the update.
+	// +optional
+	// +kubebuilder:default="25%"
+	MaxSurge string `json:"maxSurge,omitempty"`
+}
+
+// StrategySpec defines the Deployment update strategy.
+type StrategySpec struct {
+	// type is the deployment strategy type.
+	// +optional
+	// +kubebuilder:default=Recreate
+	Type DeploymentStrategyType `json:"type,omitempty"`
+
+	// rollingUpdate configures rolling update parameters. Only applicable when Type is RollingUpdate.
+	// +optional
+	RollingUpdate *RollingUpdateSpec `json:"rollingUpdate,omitempty"`
+}
+
+// SyncSpec controls periodic git repository synchronisation.
+type SyncSpec struct {
+	// enabled triggers a sync operation when set to true.
+	// The controller resets it to false after sync completes.
+	// +optional
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// time is the scheduled time for the next sync operation.
+	// +optional
+	Time *metav1.Time `json:"time,omitempty"`
+}
+
+// OdooWebhookConfig defines an optional webhook callback for status change notifications.
+// TODO: unify with the WebhookConfig in v1alpha1 once a shared package is established.
+type OdooWebhookConfig struct {
+	// url to POST status updates to when the instance phase changes.
+	// +kubebuilder:validation:Required
+	URL string `json:"url"`
+}
+
+// ProbesSpec configures the HTTP health check paths for Kubernetes probes.
+type ProbesSpec struct {
+	// startupPath is the HTTP path used for the startup probe.
+	// +optional
+	// +kubebuilder:default="/web/health"
+	StartupPath string `json:"startupPath,omitempty"`
+
+	// livenessPath is the HTTP path used for the liveness probe.
+	// +optional
+	// +kubebuilder:default="/web/health"
+	LivenessPath string `json:"livenessPath,omitempty"`
+
+	// readinessPath is the HTTP path used for the readiness probe.
+	// Use /health/ready if the health_check_k8s module is installed for deep checks (DB + filestore).
+	// +optional
+	// +kubebuilder:default="/web/health"
+	ReadinessPath string `json:"readinessPath,omitempty"`
+}
+
+// OdooInstanceSpec defines the desired state of OdooInstance.
+type OdooInstanceSpec struct {
+	// image is the Odoo container image to use (e.g. "odoo:18.0").
+	// +kubebuilder:default="odoo:18.0"
+	Image string `json:"image"`
+
+	// imagePullSecret is the name of the Secret containing registry credentials.
+	// +optional
+	ImagePullSecret string `json:"imagePullSecret,omitempty"`
+
+	// adminPassword is the Odoo database administrator password.
+	AdminPassword string `json:"adminPassword"`
+
+	// replicas is the number of Odoo pod replicas to run.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	Replicas int32 `json:"replicas"`
+
+	// ingress configures the Ingress resource for this instance.
+	Ingress IngressSpec `json:"ingress"`
+
+	// resources sets CPU and memory requests and limits for the Odoo container.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// filestore configures persistent storage for the Odoo filestore.
+	// +optional
+	Filestore *FilestoreSpec `json:"filestore,omitempty"`
+
+	// configOptions are additional key-value pairs appended to odoo.conf.
+	// +optional
+	ConfigOptions map[string]string `json:"configOptions,omitempty"`
+
+	// database identifies the PostgreSQL cluster to use for this instance.
+	// +optional
+	Database *DatabaseSpec `json:"database,omitempty"`
+
+	// strategy defines the Deployment update strategy.
+	// +optional
+	Strategy *StrategySpec `json:"strategy,omitempty"`
+
+	// sync configures periodic git repository synchronisation.
+	// +optional
+	Sync *SyncSpec `json:"sync,omitempty"`
+
+	// webhook is an optional callback invoked when the instance phase changes.
+	// +optional
+	Webhook *OdooWebhookConfig `json:"webhook,omitempty"`
+
+	// probes configures the HTTP health check paths for Kubernetes liveness, readiness, and startup probes.
+	// +optional
+	Probes *ProbesSpec `json:"probes,omitempty"`
+}
+
+// OdooInstancePhase represents the lifecycle state of an OdooInstance.
+// +kubebuilder:validation:Enum=Running;Upgrading;Restoring
+type OdooInstancePhase string
+
+const (
+	OdooInstancePhaseRunning   OdooInstancePhase = "Running"
+	OdooInstancePhaseUpgrading OdooInstancePhase = "Upgrading"
+	OdooInstancePhaseRestoring OdooInstancePhase = "Restoring"
+)
+
+// OdooInstanceStatus defines the observed state of OdooInstance.
+type OdooInstanceStatus struct {
+	// phase is the current lifecycle phase of the instance.
+	// +optional
+	Phase OdooInstancePhase `json:"phase,omitempty"`
+
+	// message is a human-readable description of the current status.
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// ready is true when the instance is fully functional and all pods are ready.
+	// +optional
+	Ready bool `json:"ready,omitempty"`
+
+	// url is the primary URL at which the instance is reachable.
+	// +optional
+	URL string `json:"url,omitempty"`
+
+	// lastBackup is the timestamp of the most recent successful backup.
+	// +optional
+	LastBackup *metav1.Time `json:"lastBackup,omitempty"`
+
+	// conditions represent the detailed state of this resource using
+	// standard Kubernetes condition conventions.
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=odoo
+// +kubebuilder:printcolumn:name="Image",type=string,JSONPath=`.spec.image`
+// +kubebuilder:printcolumn:name="Replicas",type=integer,JSONPath=`.spec.replicas`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.status.url`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// OdooInstance is the Schema for the odooinstances API.
+type OdooInstance struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitzero"`
+
+	// +required
+	Spec OdooInstanceSpec `json:"spec"`
+
+	// +optional
+	Status OdooInstanceStatus `json:"status,omitzero"`
+}
+
+// +kubebuilder:object:root=true
+
+// OdooInstanceList contains a list of OdooInstance.
+type OdooInstanceList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitzero"`
+	Items           []OdooInstance `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&OdooInstance{}, &OdooInstanceList{})
+}
