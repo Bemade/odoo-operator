@@ -152,8 +152,9 @@ func (r *OdooInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Snapshot the phase before any mutations so we can detect transitions.
+	// Snapshot observable state before any mutations so we can detect transitions.
 	previousPhase := instance.Status.Phase
+	previousReadyReplicas := instance.Status.ReadyReplicas
 
 	// Write operator-level defaults into any unset spec fields on the first
 	// reconcile, then re-fetch so downstream logic works with the persisted
@@ -243,16 +244,31 @@ func (r *OdooInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		url = "https://" + instance.Spec.Ingress.Hosts[0]
 	}
 
+	// Detect a user-initiated scale request: spec.replicas changed from what we last tracked.
+	// nil TargetReplicas means first reconcile — record silently without emitting.
+	if instance.Status.TargetReplicas != nil && *instance.Status.TargetReplicas != instance.Spec.Replicas {
+		r.Recorder.Eventf(&instance, corev1.EventTypeNormal, "ScaleRequested",
+			"Scale requested: %d → %d replicas", *instance.Status.TargetReplicas, instance.Spec.Replicas)
+	}
+
 	patch := client.MergeFrom(instance.DeepCopy())
 	instance.Status.Phase = phase
 	instance.Status.ReadyReplicas = readyReplicas
 	instance.Status.Ready = readyReplicas == instance.Spec.Replicas && instance.Spec.Replicas > 0
 	instance.Status.URL = url
+	instance.Status.TargetReplicas = ptr(instance.Spec.Replicas)
 	meta.SetStatusCondition(&instance.Status.Conditions, phaseToCondition(phase, instance.Generation))
 	if err := r.Status().Patch(ctx, &instance, patch); err != nil {
 		r.Recorder.Eventf(&instance, corev1.EventTypeWarning, "StatusUpdateFailed",
 			"Failed to update instance status: %v", err)
 		return ctrl.Result{}, err
+	}
+
+	// Confirm scale completion when readyReplicas just reached the desired count.
+	if readyReplicas == instance.Spec.Replicas && readyReplicas > 0 &&
+		previousReadyReplicas != instance.Spec.Replicas {
+		r.Recorder.Eventf(&instance, corev1.EventTypeNormal, "ScaleCompleted",
+			"Scale complete: %d/%d replicas ready", readyReplicas, instance.Spec.Replicas)
 	}
 
 	// Emit a phase-transition event and fire webhook (deduplicated: only when phase actually changes).
@@ -1024,7 +1040,7 @@ func (r *OdooInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}}
 	}
 
-	r.Recorder = mgr.GetEventRecorderFor("odooinstance-controller")
+	r.Recorder = mgr.GetEventRecorderFor("odoo-operator")
 	if r.HTTPClient == nil {
 		r.HTTPClient = &http.Client{Timeout: 10 * time.Second}
 	}

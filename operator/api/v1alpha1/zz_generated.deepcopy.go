@@ -472,6 +472,11 @@ func (in *OdooInstanceStatus) DeepCopyInto(out *OdooInstanceStatus) {
 		in, out := &in.LastBackup, &out.LastBackup
 		*out = (*in).DeepCopy()
 	}
+	if in.TargetReplicas != nil {
+		in, out := &in.TargetReplicas, &out.TargetReplicas
+		*out = new(int32)
+		**out = **in
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

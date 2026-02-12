@@ -234,6 +234,11 @@ type OdooInstanceStatus struct {
 	// +optional
 	LastBackup *metav1.Time `json:"lastBackup,omitempty"`
 
+	// targetReplicas is the last spec.replicas value observed by the controller.
+	// Used to detect user-initiated scale operations and emit ScaleRequested events.
+	// +optional
+	TargetReplicas *int32 `json:"targetReplicas,omitempty"`
+
 	// conditions represent the detailed state of this resource using
 	// standard Kubernetes condition conventions.
 	// +listType=map
