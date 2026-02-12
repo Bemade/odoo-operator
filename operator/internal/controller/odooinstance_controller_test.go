@@ -42,6 +42,16 @@ import (
 	bemadev1alpha1 "github.com/bemade/odoo-operator/operator/api/v1alpha1"
 )
 
+// noopPostgresManager is a test double that skips real PostgreSQL operations.
+type noopPostgresManager struct{}
+
+func (m *noopPostgresManager) EnsureRole(_ context.Context, _ postgresClusterConfig, _, _ string) error {
+	return nil
+}
+func (m *noopPostgresManager) DeleteRole(_ context.Context, _ postgresClusterConfig, _ string) error {
+	return nil
+}
+
 var _ = Describe("OdooInstance Controller", func() {
 	var (
 		ctx        context.Context
@@ -60,6 +70,7 @@ var _ = Describe("OdooInstance Controller", func() {
 			Scheme:            k8sClient.Scheme(),
 			Recorder:          record.NewFakeRecorder(100),
 			OperatorNamespace: ns,
+			Postgres:          &noopPostgresManager{},
 		}
 		// Ensure postgres-clusters secret exists (shared across tests, idempotent).
 		secret := &corev1.Secret{
@@ -171,7 +182,6 @@ var _ = Describe("OdooInstance Controller", func() {
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-filestore-pvc", Namespace: ns}, &corev1.PersistentVolumeClaim{})).To(Succeed())
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-odoo-user", Namespace: ns}, &corev1.Secret{})).To(Succeed())
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-db-config", Namespace: ns}, &corev1.Secret{})).To(Succeed())
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-odoo-conf", Namespace: ns}, &corev1.ConfigMap{})).To(Succeed())
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &corev1.Service{})).To(Succeed())
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &networkingv1.Ingress{})).To(Succeed())
@@ -196,15 +206,19 @@ var _ = Describe("OdooInstance Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("sets the db-config secret with host and port from the postgres cluster", func() {
+		It("sets the odoo-conf ConfigMap with DB connection keys from the postgres cluster", func() {
 			createInstance()
 			_, err := reconcileInstance()
 			Expect(err).NotTo(HaveOccurred())
 
-			secret := &corev1.Secret{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-db-config", Namespace: ns}, secret)).To(Succeed())
-			Expect(string(secret.Data["host"])).To(Equal("test-postgres"))
-			Expect(string(secret.Data["port"])).To(Equal("5432"))
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-odoo-conf", Namespace: ns}, cm)).To(Succeed())
+			Expect(cm.Data["db_host"]).To(Equal("test-postgres"))
+			Expect(cm.Data["db_port"]).To(Equal("5432"))
+			Expect(cm.Data["db_user"]).To(HavePrefix("odoo."))
+			Expect(cm.Data["db_password"]).NotTo(BeEmpty())
+			Expect(cm.Data["db_name"]).To(HavePrefix("odoo_"))
+			Expect(cm.Data["odoo.conf"]).To(ContainSubstring("db_host = test-postgres"))
 		})
 
 		It("sets the odoo-user secret with the correct username format", func() {
@@ -232,6 +246,42 @@ var _ = Describe("OdooInstance Controller", func() {
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-odoo-user", Namespace: ns}, secret)).To(Succeed())
 			Expect(string(secret.Data["password"])).To(Equal(originalPassword))
+		})
+
+		It("sets an odoo-conf-hash annotation on the pod template", func() {
+			createInstance()
+			_, err := reconcileInstance()
+			Expect(err).NotTo(HaveOccurred())
+
+			dep := getDeployment()
+			hash := dep.Spec.Template.Annotations["bemade.org/odoo-conf-hash"]
+			Expect(hash).NotTo(BeEmpty())
+			Expect(hash).To(HaveLen(64)) // SHA-256 hex
+		})
+
+		It("restarts the Odoo deployment when configOptions change", func() {
+			inst := createInstance()
+			_, err := reconcileInstance()
+			Expect(err).NotTo(HaveOccurred())
+
+			dep := getDeployment()
+			hashBefore := dep.Spec.Template.Annotations["bemade.org/odoo-conf-hash"]
+			generationBefore := dep.Generation
+
+			// Update configOptions
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, inst)).To(Succeed())
+			inst.Spec.ConfigOptions = map[string]string{"workers": "4"}
+			Expect(k8sClient.Update(ctx, inst)).To(Succeed())
+
+			_, err = reconcileInstance()
+			Expect(err).NotTo(HaveOccurred())
+
+			dep = getDeployment()
+			hashAfter := dep.Spec.Template.Annotations["bemade.org/odoo-conf-hash"]
+			Expect(hashAfter).NotTo(Equal(hashBefore))
+			// The pod template change bumps the deployment generation,
+			// which causes Kubernetes to trigger a rollout.
+			Expect(dep.Generation).To(BeNumerically(">", generationBefore))
 		})
 
 		It("writes odoo.conf with db_user and list_db=False", func() {
@@ -498,11 +548,11 @@ var _ = Describe("OdooInstance Controller", func() {
 			Expect(getInstance().Status.Phase).To(Equal(bemadev1alpha1.OdooInstancePhaseUpgrading))
 		})
 
-		It("is UpgradeFailed when an OdooUpgradeJob has Failed", func() {
+		It("is Starting when an OdooUpgradeJob has Failed (deployment scaled to 0)", func() {
 			createUpgradeJob(bemadev1alpha1.PhaseFailed)
 			_, err := reconcileInstance()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(getInstance().Status.Phase).To(Equal(bemadev1alpha1.OdooInstancePhaseUpgradeFailed))
+			Expect(getInstance().Status.Phase).To(Equal(bemadev1alpha1.OdooInstancePhaseStarting))
 		})
 
 		It("is Restoring when an OdooRestoreJob is Running", func() {
@@ -512,11 +562,11 @@ var _ = Describe("OdooInstance Controller", func() {
 			Expect(getInstance().Status.Phase).To(Equal(bemadev1alpha1.OdooInstancePhaseRestoring))
 		})
 
-		It("is RestoreFailed when an OdooRestoreJob has Failed", func() {
+		It("is Starting when an OdooRestoreJob has Failed (deployment scaled to 0)", func() {
 			createRestoreJob(bemadev1alpha1.PhaseFailed)
 			_, err := reconcileInstance()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(getInstance().Status.Phase).To(Equal(bemadev1alpha1.OdooInstancePhaseRestoreFailed))
+			Expect(getInstance().Status.Phase).To(Equal(bemadev1alpha1.OdooInstancePhaseStarting))
 		})
 	})
 

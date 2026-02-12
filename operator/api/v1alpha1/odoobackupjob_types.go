@@ -19,12 +19,36 @@ with odoo-operator. If not, see <https://www.gnu.org/licenses/>.
 
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // BackupDestination specifies where to store the backup artifact.
+// Fields are at the top level (not nested under "s3") for backward
+// compatibility with the Python operator's CRD schema.
 type BackupDestination struct {
-	// s3 configures upload to an S3-compatible object store.
-	S3 S3Config `json:"s3"`
+	// bucket is the S3 bucket name.
+	Bucket string `json:"bucket"`
+
+	// objectKey is the object key (path) within the bucket.
+	ObjectKey string `json:"objectKey"`
+
+	// endpoint is the S3-compatible endpoint URL (e.g. "https://s3.example.com").
+	Endpoint string `json:"endpoint"`
+
+	// region is the optional S3 region.
+	// +optional
+	Region string `json:"region,omitempty"`
+
+	// insecure disables TLS certificate verification.
+	// +optional
+	// +kubebuilder:default=false
+	Insecure bool `json:"insecure,omitempty"`
+
+	// s3CredentialsSecretRef references a Secret with accessKey and secretKey fields.
+	// +optional
+	S3CredentialsSecretRef *corev1.SecretReference `json:"s3CredentialsSecretRef,omitempty"`
 }
 
 // OdooBackupJobSpec defines the desired state of OdooBackupJob.

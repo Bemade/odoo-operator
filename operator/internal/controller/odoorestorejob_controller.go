@@ -20,6 +20,8 @@ with odoo-operator. If not, see <https://www.gnu.org/licenses/>.
 package controller
 
 import (
+	_ "embed"
+
 	"bytes"
 	"context"
 	"encoding/json"
@@ -41,65 +43,14 @@ import (
 	bemadev1alpha1 "github.com/bemade/odoo-operator/operator/api/v1alpha1"
 )
 
-// downloadScript downloads the backup artifact from S3 to /mnt/restore/.
-const downloadScript = `
-set -ex
-MC_CONFIG_DIR="${MC_CONFIG_DIR:-/tmp/.mc}"
-mkdir -p "$MC_CONFIG_DIR" /mnt/restore
+//go:embed scripts/s3-download.sh
+var s3DownloadScript string
 
-MC_INSECURE=""
-[ "${S3_INSECURE}" = "true" ] && MC_INSECURE="--insecure"
+//go:embed scripts/odoo-download.sh
+var odooDownloadScript string
 
-mc $MC_INSECURE alias set src "$S3_ENDPOINT" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY"
-mc $MC_INSECURE cp "src/$S3_BUCKET/$S3_KEY" "/mnt/restore/$LOCAL_FILENAME"
-echo "Download complete: /mnt/restore/$LOCAL_FILENAME"
-`
-
-// restoreScript restores the backup artifact and optionally neutralises the DB.
-const restoreScript = `
-set -ex
-export PGPASSWORD=$PASSWORD
-
-echo "=== Dropping existing database if present ==="
-psql -h "$HOST" -p "$PORT" -U "$USER" -d postgres \
-  -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB_NAME' AND pid <> pg_backend_pid();" || true
-psql -h "$HOST" -p "$PORT" -U "$USER" -d postgres \
-  -c "DROP DATABASE IF EXISTS \"$DB_NAME\";" || true
-
-echo "=== Restoring from $BACKUP_FORMAT backup ==="
-case "$BACKUP_FORMAT" in
-  zip)
-    odoo db \
-      --db_host "$HOST" --db_port "$PORT" \
-      --db_user "$USER" --db_password "$PASSWORD" \
-      restore "$DB_NAME" "/mnt/restore/$LOCAL_FILENAME"
-    ;;
-  dump)
-    psql -h "$HOST" -p "$PORT" -U "$USER" -d postgres -c "CREATE DATABASE \"$DB_NAME\";"
-    pg_restore -h "$HOST" -p "$PORT" -U "$USER" -d "$DB_NAME" \
-      --no-owner --no-privileges "/mnt/restore/$LOCAL_FILENAME"
-    ;;
-  *)
-    psql -h "$HOST" -p "$PORT" -U "$USER" -d postgres -c "CREATE DATABASE \"$DB_NAME\";"
-    psql -h "$HOST" -p "$PORT" -U "$USER" -d "$DB_NAME" < "/mnt/restore/$LOCAL_FILENAME"
-    ;;
-esac
-
-if [ "$NEUTRALIZE" = "true" ]; then
-  echo "=== Neutralising database ==="
-  odoo neutralize \
-    --db_host "$HOST" --db_port "$PORT" \
-    --db_user "$USER" --db_password "$PASSWORD" \
-    --database "$DB_NAME" || {
-    echo "Neutralisation failed — dropping database for safety"
-    psql -h "$HOST" -p "$PORT" -U "$USER" -d postgres \
-      -c "DROP DATABASE IF EXISTS \"$DB_NAME\";"
-    exit 1
-  }
-fi
-
-echo "=== Restore complete ==="
-`
+//go:embed scripts/restore.sh
+var restoreScript string
 
 // OdooRestoreJobReconciler reconciles a OdooRestoreJob object.
 type OdooRestoreJobReconciler struct {
@@ -140,6 +91,21 @@ func (r *OdooRestoreJobReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 func (r *OdooRestoreJobReconciler) startJob(ctx context.Context, restoreJob *bemadev1alpha1.OdooRestoreJob) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Guard: if a Job already exists for this CR, adopt it instead of creating a duplicate.
+	existing, err := findOwnedJob(ctx, r.Client, restoreJob.UID, restoreJob.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if existing != nil {
+		log.Info("found existing job, adopting", "job", existing.Name)
+		patch := client.MergeFrom(restoreJob.DeepCopy())
+		restoreJob.Status.Phase = bemadev1alpha1.PhaseRunning
+		restoreJob.Status.JobName = existing.Name
+		now := metav1.Now()
+		restoreJob.Status.StartTime = &now
+		return ctrl.Result{}, r.Status().Patch(ctx, restoreJob, patch)
+	}
+
 	instanceNS := restoreJob.Spec.OdooInstanceRef.Namespace
 	if instanceNS == "" {
 		instanceNS = restoreJob.Namespace
@@ -154,12 +120,25 @@ func (r *OdooRestoreJobReconciler) startJob(ctx context.Context, restoreJob *bem
 		return ctrl.Result{}, err
 	}
 
+	// Requeue if the instance is not ready for a restore.
+	if phase := odooInstance.Status.Phase; phase == bemadev1alpha1.OdooInstancePhaseProvisioning ||
+		phase == bemadev1alpha1.OdooInstancePhaseRestoring ||
+		phase == bemadev1alpha1.OdooInstancePhaseInitializing {
+		log.Info("instance not ready for restore, requeuing", "instance", instanceName, "phase", phase)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
 	// Scale down before restoring to prevent writes during restore.
 	if err := scaleDeployment(ctx, r.Client, instanceName, instanceNS, 0); err != nil {
 		log.Error(err, "failed to scale down deployment — proceeding anyway", "instance", instanceName)
 	}
 
-	job, err := r.buildRestoreJob(restoreJob, &odooInstance)
+	// Mark the OdooInstance as Restoring.
+	if err := patchInstancePhase(ctx, r.Client, instanceName, instanceNS, string(bemadev1alpha1.OdooInstancePhaseRestoring)); err != nil {
+		log.Error(err, "failed to set instance phase to Restoring")
+	}
+
+	job, err := r.buildRestoreJob(ctx, restoreJob, &odooInstance)
 	if err != nil {
 		return r.setFailed(ctx, restoreJob, fmt.Sprintf("failed to build job: %v", err))
 	}
@@ -203,10 +182,13 @@ func (r *OdooRestoreJobReconciler) syncJobStatus(ctx context.Context, restoreJob
 		return ctrl.Result{}, r.finalise(ctx, restoreJob, bemadev1alpha1.PhaseFailed, "restore job failed")
 	}
 
-	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	// Still running — Owns(&batchv1.Job{}) will trigger reconciliation on status change.
+	return ctrl.Result{}, nil
 }
 
 func (r *OdooRestoreJobReconciler) finalise(ctx context.Context, restoreJob *bemadev1alpha1.OdooRestoreJob, phase bemadev1alpha1.Phase, message string) error {
+	log := logf.FromContext(ctx)
+
 	patch := client.MergeFrom(restoreJob.DeepCopy())
 	restoreJob.Status.Phase = phase
 	restoreJob.Status.Message = message
@@ -220,8 +202,19 @@ func (r *OdooRestoreJobReconciler) finalise(ctx context.Context, restoreJob *bem
 	if instanceNS == "" {
 		instanceNS = restoreJob.Namespace
 	}
-	if err := r.scaleInstanceBackUp(ctx, restoreJob.Spec.OdooInstanceRef.Name, instanceNS); err != nil {
-		logf.FromContext(ctx).Error(err, "failed to scale instance back up")
+	instanceName := restoreJob.Spec.OdooInstanceRef.Name
+
+	if phase == bemadev1alpha1.PhaseCompleted {
+		// Restore succeeded: the DB now exists, mark it as initialized and scale up.
+		if err := r.markDBInitialized(ctx, instanceName, instanceNS); err != nil {
+			log.Error(err, "failed to mark instance as DB-initialized")
+		}
+		if err := r.scaleInstanceBackUp(ctx, instanceName, instanceNS); err != nil {
+			log.Error(err, "failed to scale instance back up")
+		}
+	} else {
+		// Restore failed: DB may be in a broken state, leave the instance stopped.
+		log.Info("restore failed, leaving instance stopped", "instance", instanceName)
 	}
 
 	if restoreJob.Spec.Webhook != nil {
@@ -229,6 +222,20 @@ func (r *OdooRestoreJobReconciler) finalise(ctx context.Context, restoreJob *bem
 	}
 
 	return nil
+}
+
+// markDBInitialized sets status.dbInitialized=true on the OdooInstance.
+func (r *OdooRestoreJobReconciler) markDBInitialized(ctx context.Context, instanceName, instanceNS string) error {
+	var instance bemadev1alpha1.OdooInstance
+	if err := r.Get(ctx, types.NamespacedName{Name: instanceName, Namespace: instanceNS}, &instance); err != nil {
+		return err
+	}
+	if instance.Status.DBInitialized {
+		return nil
+	}
+	patch := client.MergeFrom(instance.DeepCopy())
+	instance.Status.DBInitialized = true
+	return r.Status().Patch(ctx, &instance, patch)
 }
 
 func (r *OdooRestoreJobReconciler) scaleInstanceBackUp(ctx context.Context, instanceName, instanceNS string) error {
@@ -250,7 +257,7 @@ func (r *OdooRestoreJobReconciler) setFailed(ctx context.Context, restoreJob *be
 	return ctrl.Result{}, r.Status().Patch(ctx, restoreJob, patch)
 }
 
-func (r *OdooRestoreJobReconciler) buildRestoreJob(restoreJob *bemadev1alpha1.OdooRestoreJob, odooInstance *bemadev1alpha1.OdooInstance) (*batchv1.Job, error) {
+func (r *OdooRestoreJobReconciler) buildRestoreJob(ctx context.Context, restoreJob *bemadev1alpha1.OdooRestoreJob, odooInstance *bemadev1alpha1.OdooInstance) (*batchv1.Job, error) {
 	instanceName := odooInstance.Name
 	instanceUID := string(odooInstance.UID)
 
@@ -264,8 +271,7 @@ func (r *OdooRestoreJobReconciler) buildRestoreJob(restoreJob *bemadev1alpha1.Od
 		imagePullSecrets = []corev1.LocalObjectReference{{Name: odooInstance.Spec.ImagePullSecret}}
 	}
 
-	dbSecretName := fmt.Sprintf("%s-odoo-user", instanceName)
-	dbConfigSecretName := fmt.Sprintf("%s-db-config", instanceName)
+	odooConfName := fmt.Sprintf("%s-odoo-conf", instanceName)
 	dbName := fmt.Sprintf("odoo_%s", sanitiseUID(instanceUID))
 
 	format := string(restoreJob.Spec.Format)
@@ -273,122 +279,133 @@ func (r *OdooRestoreJobReconciler) buildRestoreJob(restoreJob *bemadev1alpha1.Od
 		format = "zip"
 	}
 
-	neutralize := "true"
+	// neutralize matches the Python convention: "True" / "False" (capitalised).
+	neutralize := "True"
 	if !restoreJob.Spec.Neutralize {
-		neutralize = "false"
+		neutralize = "False"
 	}
 
 	src := restoreJob.Spec.Source
 
-	// Determine local filename from S3 key or a default.
-	localFilename := "restore-artifact"
-	if src.S3 != nil && src.S3.ObjectKey != "" {
-		localFilename = src.S3.ObjectKey
+	// Output file written by the download init container; detected by name in restoreScript.
+	outputFile := "/mnt/backup/backup.zip"
+	switch bemadev1alpha1.BackupFormat(format) {
+	case bemadev1alpha1.BackupFormatDump:
+		outputFile = "/mnt/backup/dump.dump"
+	case bemadev1alpha1.BackupFormatSQL:
+		outputFile = "/mnt/backup/dump.sql"
 	}
 
-	sharedMount := corev1.VolumeMount{Name: "restore", MountPath: "/mnt/restore"}
+	sharedMount := corev1.VolumeMount{Name: "backup", MountPath: "/mnt/backup"}
 
+	// Restore container env — detects format by filename, no need to pass it.
 	dbEnv := []corev1.EnvVar{
 		{Name: "DB_NAME", Value: dbName},
-		{Name: "BACKUP_FORMAT", Value: format},
 		{Name: "NEUTRALIZE", Value: neutralize},
-		{Name: "LOCAL_FILENAME", Value: localFilename},
 		{
 			Name: "HOST",
 			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: dbConfigSecretName},
-					Key:                  "host",
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: odooConfName},
+					Key:                  "db_host",
 				},
 			},
 		},
 		{
 			Name: "PORT",
 			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: dbConfigSecretName},
-					Key:                  "port",
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: odooConfName},
+					Key:                  "db_port",
 				},
 			},
 		},
 		{
 			Name: "USER",
 			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: dbSecretName},
-					Key:                  "username",
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: odooConfName},
+					Key:                  "db_user",
 				},
 			},
 		},
 		{
 			Name: "PASSWORD",
 			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: dbSecretName},
-					Key:                  "password",
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: odooConfName},
+					Key:                  "db_password",
 				},
 			},
 		},
 	}
 
-	// Build init containers: download first, then restore.
+	// Build the optional download init container based on source type.
 	var initContainers []corev1.Container
 
-	if src.Type == bemadev1alpha1.RestoreSourceTypeS3 && src.S3 != nil {
-		insecureVal := "false"
-		if src.S3.Insecure {
-			insecureVal = "true"
+	switch src.Type {
+	case bemadev1alpha1.RestoreSourceTypeS3:
+		if src.S3 != nil {
+			insecureVal := "false"
+			if src.S3.Insecure {
+				insecureVal = "true"
+			}
+			dlEnv := []corev1.EnvVar{
+				{Name: "S3_BUCKET", Value: src.S3.Bucket},
+				{Name: "S3_KEY", Value: src.S3.ObjectKey},
+				{Name: "S3_ENDPOINT", Value: src.S3.Endpoint},
+				{Name: "S3_INSECURE", Value: insecureVal},
+				{Name: "OUTPUT_FILE", Value: outputFile},
+				{Name: "MC_CONFIG_DIR", Value: "/tmp/.mc"},
+			}
+			if src.S3.CredentialsSecretRef != nil {
+				credNS := src.S3.CredentialsSecretRef.Namespace
+				if credNS == "" {
+					credNS = restoreJob.Namespace
+				}
+				accessKey, secretKey, err := readS3Credentials(ctx, r.Client, src.S3.CredentialsSecretRef.Name, credNS)
+				if err != nil {
+					return nil, fmt.Errorf("reading S3 credentials: %w", err)
+				}
+				dlEnv = append(dlEnv,
+					corev1.EnvVar{Name: "AWS_ACCESS_KEY_ID", Value: accessKey},
+					corev1.EnvVar{Name: "AWS_SECRET_ACCESS_KEY", Value: secretKey},
+				)
+			}
+			initContainers = append(initContainers, corev1.Container{
+				Name:         "download",
+				Image:        "quay.io/minio/mc:latest",
+				Command:      []string{"/bin/sh", "-c", s3DownloadScript},
+				Env:          dlEnv,
+				VolumeMounts: []corev1.VolumeMount{sharedMount},
+			})
+		}
+	case bemadev1alpha1.RestoreSourceTypeOdoo:
+		if src.Odoo == nil {
+			return nil, fmt.Errorf("source.odoo must be set when source.type is %q", bemadev1alpha1.RestoreSourceTypeOdoo)
+		}
+		if src.Odoo.SourceDatabase == "" {
+			return nil, fmt.Errorf("source.odoo.sourceDatabase is required for Odoo source restores")
+		}
+		backupFormat := "zip"
+		if bemadev1alpha1.BackupFormat(format) != bemadev1alpha1.BackupFormatZip {
+			backupFormat = "dump"
 		}
 		dlEnv := []corev1.EnvVar{
-			{Name: "S3_BUCKET", Value: src.S3.Bucket},
-			{Name: "S3_KEY", Value: src.S3.ObjectKey},
-			{Name: "S3_ENDPOINT", Value: src.S3.Endpoint},
-			{Name: "S3_INSECURE", Value: insecureVal},
-			{Name: "LOCAL_FILENAME", Value: localFilename},
-			{Name: "MC_CONFIG_DIR", Value: "/tmp/.mc"},
-		}
-		if src.S3.CredentialsSecretRef != nil {
-			dlEnv = append(dlEnv,
-				corev1.EnvVar{
-					Name: "AWS_ACCESS_KEY_ID",
-					ValueFrom: &corev1.EnvVarSource{
-						SecretKeyRef: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{Name: src.S3.CredentialsSecretRef.Name},
-							Key:                  "accessKey",
-						},
-					},
-				},
-				corev1.EnvVar{
-					Name: "AWS_SECRET_ACCESS_KEY",
-					ValueFrom: &corev1.EnvVarSource{
-						SecretKeyRef: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{Name: src.S3.CredentialsSecretRef.Name},
-							Key:                  "secretKey",
-						},
-					},
-				},
-			)
+			{Name: "ODOO_URL", Value: src.Odoo.URL},
+			{Name: "SOURCE_DB", Value: src.Odoo.SourceDatabase},
+			{Name: "MASTER_PASSWORD", Value: src.Odoo.MasterPassword},
+			{Name: "BACKUP_FORMAT", Value: backupFormat},
+			{Name: "OUTPUT_FILE", Value: outputFile},
 		}
 		initContainers = append(initContainers, corev1.Container{
-			Name:         "downloader",
-			Image:        "quay.io/minio/mc:latest",
-			Command:      []string{"/bin/sh", "-c", downloadScript},
+			Name:         "download",
+			Image:        "curlimages/curl:latest",
+			Command:      []string{"/bin/sh", "-c", odooDownloadScript},
 			Env:          dlEnv,
 			VolumeMounts: []corev1.VolumeMount{sharedMount},
 		})
 	}
-
-	initContainers = append(initContainers, corev1.Container{
-		Name:    "importer",
-		Image:   image,
-		Command: []string{"/bin/sh", "-c", restoreScript},
-		Env:     dbEnv,
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: "filestore", MountPath: "/var/lib/odoo"},
-			{Name: "odoo-conf", MountPath: "/etc/odoo"},
-			sharedMount,
-		},
-	})
 
 	ttl := int32(900)
 	backoffLimit := int32(0)
@@ -433,17 +450,22 @@ func (r *OdooRestoreJobReconciler) buildRestoreJob(restoreJob *bemadev1alpha1.Od
 							},
 						},
 						{
-							Name:         "restore",
+							Name:         "backup",
 							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 						},
 					},
 					InitContainers: initContainers,
-					// Sentinel container: exits immediately once all init containers succeed.
 					Containers: []corev1.Container{
 						{
-							Name:    "complete",
-							Image:   "busybox:latest",
-							Command: []string{"/bin/sh", "-c", "echo restore complete"},
+							Name:    "restore",
+							Image:   image,
+							Command: []string{"/bin/sh", "-c", restoreScript},
+							Env:     dbEnv,
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "filestore", MountPath: "/var/lib/odoo"},
+								{Name: "odoo-conf", MountPath: "/etc/odoo"},
+								sharedMount,
+							},
 						},
 					},
 				},
@@ -472,13 +494,17 @@ func (r *OdooRestoreJobReconciler) notifyWebhook(ctx context.Context, restoreJob
 		}
 	}
 
-	payload, _ := json.Marshal(map[string]any{
-		"restoreJob":     restoreJob.Name,
-		"namespace":      restoreJob.Namespace,
-		"phase":          phase,
-		"targetInstance": restoreJob.Spec.OdooInstanceRef.Name,
-		"sourceType":     restoreJob.Spec.Source.Type,
-	})
+	data := map[string]any{
+		"phase":   phase,
+		"jobName": restoreJob.Status.JobName,
+	}
+	if restoreJob.Status.Message != "" {
+		data["message"] = restoreJob.Status.Message
+	}
+	if restoreJob.Status.CompletionTime != nil {
+		data["completionTime"] = restoreJob.Status.CompletionTime.UTC().Format("2006-01-02 15:04:05")
+	}
+	payload, _ := json.Marshal(data)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wh.URL, bytes.NewReader(payload))
 	if err != nil {

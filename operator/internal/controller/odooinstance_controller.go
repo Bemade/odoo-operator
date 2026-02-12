@@ -23,10 +23,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,13 +52,96 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 
 	bemadev1alpha1 "github.com/bemade/odoo-operator/operator/api/v1alpha1"
+	"github.com/jackc/pgx/v5"
 )
 
 // postgresClusterConfig is the per-cluster entry from the postgres-clusters Secret.
 type postgresClusterConfig struct {
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	Default bool   `json:"default"`
+	Host          string `json:"host"`
+	Port          int    `json:"port"`
+	AdminUser     string `json:"adminUser"`
+	AdminPassword string `json:"adminPassword"`
+	Default       bool   `json:"default"`
+}
+
+// PostgresManager abstracts PostgreSQL role management so that tests can
+// substitute a no-op implementation (envtest has no real PostgreSQL server).
+type PostgresManager interface {
+	EnsureRole(ctx context.Context, pg postgresClusterConfig, username, password string) error
+	DeleteRole(ctx context.Context, pg postgresClusterConfig, username string) error
+}
+
+// pgxPostgresManager is the production implementation backed by pgx.
+type pgxPostgresManager struct{}
+
+func (m *pgxPostgresManager) EnsureRole(ctx context.Context, pg postgresClusterConfig, username, password string) error {
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/postgres", pg.AdminUser, pg.AdminPassword, pg.Host, pg.Port)
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("connecting to postgres: %w", err)
+	}
+	defer conn.Close(ctx)
+
+	var exists bool
+	if err := conn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)", username).Scan(&exists); err != nil {
+		return fmt.Errorf("checking role existence: %w", err)
+	}
+	if exists {
+		return nil
+	}
+
+	_, err = conn.Exec(ctx, fmt.Sprintf(
+		`CREATE ROLE %s WITH PASSWORD '%s' CREATEDB LOGIN`,
+		pgx.Identifier{username}.Sanitize(), password,
+	))
+	if err != nil {
+		return fmt.Errorf("creating postgres role %q: %w", username, err)
+	}
+	return nil
+}
+
+func (m *pgxPostgresManager) DeleteRole(ctx context.Context, pg postgresClusterConfig, username string) error {
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/postgres", pg.AdminUser, pg.AdminPassword, pg.Host, pg.Port)
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("connecting to postgres: %w", err)
+	}
+	defer conn.Close(ctx)
+
+	var exists bool
+	if err := conn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)", username).Scan(&exists); err != nil {
+		return fmt.Errorf("checking role existence: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+
+	rows, err := conn.Query(ctx,
+		`SELECT d.datname FROM pg_database d JOIN pg_roles r ON d.datdba = r.oid
+		 WHERE r.rolname = $1 AND d.datistemplate = false`, username)
+	if err != nil {
+		return fmt.Errorf("listing databases for role %q: %w", username, err)
+	}
+	var databases []string
+	for rows.Next() {
+		var db string
+		if err := rows.Scan(&db); err != nil {
+			return fmt.Errorf("scanning database name: %w", err)
+		}
+		databases = append(databases, db)
+	}
+	rows.Close()
+
+	for _, db := range databases {
+		if _, err := conn.Exec(ctx, fmt.Sprintf("DROP DATABASE %s", pgx.Identifier{db}.Sanitize())); err != nil {
+			return fmt.Errorf("dropping database %q: %w", db, err)
+		}
+	}
+
+	if _, err := conn.Exec(ctx, fmt.Sprintf("DROP ROLE %s", pgx.Identifier{username}.Sanitize())); err != nil {
+		return fmt.Errorf("dropping role %q: %w", username, err)
+	}
+	return nil
 }
 
 // OdooInstanceReconciler reconciles a OdooInstance object.
@@ -68,6 +153,7 @@ type OdooInstanceReconciler struct {
 	OperatorNamespace      string
 	PostgresClustersSecret string
 	Defaults               OperatorDefaults
+	Postgres               PostgresManager
 }
 
 // applyDefaults writes operator-level defaults into any unset spec fields and
@@ -144,12 +230,44 @@ func (r *OdooInstanceReconciler) applyDefaults(instance *bemadev1alpha1.OdooInst
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
+const odooInstanceFinalizer = "bemade.org/postgres-cleanup"
+
 func (r *OdooInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	var instance bemadev1alpha1.OdooInstance
 	if err := r.Get(ctx, req.NamespacedName, &instance); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Handle deletion: clean up the PostgreSQL role and owned databases.
+	if !instance.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&instance, odooInstanceFinalizer) {
+			if instance.Spec.Database != nil && instance.Spec.Database.Cluster != "" {
+				_, pgCluster, err := r.loadPostgresCluster(ctx, instance.Spec.Database)
+				if err != nil {
+					log.Error(err, "failed to load postgres cluster for cleanup — removing finalizer anyway")
+				} else if err := r.deletePostgresRole(ctx, &instance, pgCluster); err != nil {
+					log.Error(err, "failed to delete postgres role — removing finalizer anyway")
+				}
+			}
+			controllerutil.RemoveFinalizer(&instance, odooInstanceFinalizer)
+			if err := r.Update(ctx, &instance); err != nil {
+				return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Ensure the finalizer is present for postgres cleanup on deletion.
+	if !controllerutil.ContainsFinalizer(&instance, odooInstanceFinalizer) {
+		controllerutil.AddFinalizer(&instance, odooInstanceFinalizer)
+		if err := r.Update(ctx, &instance); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
+		}
+		if err := r.Get(ctx, req.NamespacedName, &instance); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
 	}
 
 	// Snapshot observable state before any mutations so we can detect transitions.
@@ -172,7 +290,7 @@ func (r *OdooInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
-	// Load postgres cluster config (needed for db-config secret and Deployment env vars).
+	// Load postgres cluster config (needed for postgres role and odoo-conf ConfigMap).
 	// If spec.database.cluster was not set, loadPostgresCluster resolves the default
 	// from the secret and returns its name so we can persist it into the spec.
 	clusterName, pgCluster, err := r.loadPostgresCluster(ctx, instance.Spec.Database)
@@ -301,13 +419,13 @@ func (r *OdooInstanceReconciler) ensureChildResources(ctx context.Context, insta
 	if err := r.ensureOdooUserSecret(ctx, instance); err != nil {
 		return fmt.Errorf("odoo-user secret: %w", err)
 	}
-	if err := r.ensureDBConfigSecret(ctx, instance, pg); err != nil {
-		return fmt.Errorf("db-config secret: %w", err)
+	if err := r.ensurePostgresRole(ctx, instance, pg); err != nil {
+		return fmt.Errorf("postgres role: %w", err)
 	}
 	if err := r.ensureFilestorePVC(ctx, instance); err != nil {
 		return fmt.Errorf("filestore pvc: %w", err)
 	}
-	if err := r.ensureConfigMap(ctx, instance); err != nil {
+	if err := r.ensureConfigMap(ctx, instance, pg); err != nil {
 		return fmt.Errorf("odoo-conf configmap: %w", err)
 	}
 	if err := r.ensureService(ctx, instance); err != nil {
@@ -374,21 +492,38 @@ func (r *OdooInstanceReconciler) ensureOdooUserSecret(ctx context.Context, insta
 	return err
 }
 
-func (r *OdooInstanceReconciler) ensureDBConfigSecret(ctx context.Context, instance *bemadev1alpha1.OdooInstance, pg postgresClusterConfig) error {
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name + "-db-config",
-			Namespace: instance.Namespace,
-		},
+// ensurePostgresRole creates the PostgreSQL role for the Odoo instance if it
+// does not already exist. The credentials are read from the odoo-user Secret
+// (which ensureOdooUserSecret must have created first).
+func (r *OdooInstanceReconciler) ensurePostgresRole(ctx context.Context, instance *bemadev1alpha1.OdooInstance, pg postgresClusterConfig) error {
+	// Read the odoo-user secret to get the username and password.
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: instance.Name + "-odoo-user", Namespace: instance.Namespace}, &secret); err != nil {
+		return fmt.Errorf("reading odoo-user secret: %w", err)
 	}
-	_, err := controllerutil.CreateOrPatch(ctx, r.Client, secret, func() error {
-		secret.Data = map[string][]byte{
-			"host": []byte(pg.Host),
-			"port": []byte(fmt.Sprintf("%d", pg.Port)),
-		}
-		return controllerutil.SetControllerReference(instance, secret, r.Scheme)
-	})
-	return err
+	username := string(secret.Data["username"])
+	password := string(secret.Data["password"])
+
+	if err := r.Postgres.EnsureRole(ctx, pg, username, password); err != nil {
+		return err
+	}
+	return nil
+}
+
+// deletePostgresRole drops all databases owned by the Odoo user and then drops
+// the role itself. Called during finalizer processing when the OdooInstance is
+// being deleted.
+func (r *OdooInstanceReconciler) deletePostgresRole(ctx context.Context, instance *bemadev1alpha1.OdooInstance, pg postgresClusterConfig) error {
+	log := logf.FromContext(ctx)
+	username := odooUsername(instance.Namespace, instance.Name)
+
+	if err := r.Postgres.DeleteRole(ctx, pg, username); err != nil {
+		return err
+	}
+	log.Info("deleted postgres role", "role", username)
+	r.Recorder.Eventf(instance, corev1.EventTypeNormal, "PostgresRoleDeleted",
+		"Deleted PostgreSQL role %q from cluster %s", username, pg.Host)
+	return nil
 }
 
 func (r *OdooInstanceReconciler) ensureFilestorePVC(ctx context.Context, instance *bemadev1alpha1.OdooInstance) error {
@@ -430,8 +565,17 @@ func (r *OdooInstanceReconciler) ensureFilestorePVC(ctx context.Context, instanc
 	return err
 }
 
-func (r *OdooInstanceReconciler) ensureConfigMap(ctx context.Context, instance *bemadev1alpha1.OdooInstance) error {
+func (r *OdooInstanceReconciler) ensureConfigMap(ctx context.Context, instance *bemadev1alpha1.OdooInstance, pg postgresClusterConfig) error {
 	username := odooUsername(instance.Namespace, instance.Name)
+	dbName := fmt.Sprintf("odoo_%s", sanitiseUID(string(instance.UID)))
+
+	// Read the password from the odoo-user secret (created by ensureOdooUserSecret).
+	var userSecret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: instance.Name + "-odoo-user", Namespace: instance.Namespace}, &userSecret); err != nil {
+		return fmt.Errorf("reading odoo-user secret for configmap: %w", err)
+	}
+	password := string(userSecret.Data["password"])
+
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      instance.Name + "-odoo-conf",
@@ -440,7 +584,12 @@ func (r *OdooInstanceReconciler) ensureConfigMap(ctx context.Context, instance *
 	}
 	_, err := controllerutil.CreateOrPatch(ctx, r.Client, cm, func() error {
 		cm.Data = map[string]string{
-			"odoo.conf": buildOdooConf(username, instance.Spec.AdminPassword, instance.Spec.ConfigOptions),
+			"odoo.conf":    buildOdooConf(username, password, instance.Spec.AdminPassword, pg.Host, pg.Port, dbName, instance.Spec.ConfigOptions),
+			"db_host":      pg.Host,
+			"db_port":      fmt.Sprintf("%d", pg.Port),
+			"db_name":      dbName,
+			"db_user":      username,
+			"db_password":  password,
 		}
 		return controllerutil.SetControllerReference(instance, cm, r.Scheme)
 	})
@@ -573,11 +722,18 @@ func (r *OdooInstanceReconciler) ensureDeployment(ctx context.Context, instance 
 			}
 		}
 
-		dbSecretName := instance.Name + "-odoo-user"
-		dbConfigSecretName := instance.Name + "-db-config"
+		// Hash the odoo.conf content so that ConfigMap changes trigger a rollout.
+		var cm corev1.ConfigMap
+		if err := r.Get(ctx, types.NamespacedName{Name: instance.Name + "-odoo-conf", Namespace: instance.Namespace}, &cm); err != nil {
+			return fmt.Errorf("reading odoo-conf for hash: %w", err)
+		}
+		confHash := fmt.Sprintf("%x", sha256.Sum256([]byte(cm.Data["odoo.conf"])))
 
 		dep.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": instance.Name}},
+			ObjectMeta: metav1.ObjectMeta{
+				Labels:      map[string]string{"app": instance.Name},
+				Annotations: map[string]string{"bemade.org/odoo-conf-hash": confHash},
+			},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets: imagePullSecrets,
 				Affinity:         instance.Spec.Affinity,
@@ -619,44 +775,6 @@ func (r *OdooInstanceReconciler) ensureDeployment(ctx context.Context, instance 
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "filestore", MountPath: "/var/lib/odoo"},
 							{Name: "odoo-conf", MountPath: "/etc/odoo"},
-						},
-						Env: []corev1.EnvVar{
-							{
-								Name: "HOST",
-								ValueFrom: &corev1.EnvVarSource{
-									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{Name: dbConfigSecretName},
-										Key:                  "host",
-									},
-								},
-							},
-							{
-								Name: "PORT",
-								ValueFrom: &corev1.EnvVarSource{
-									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{Name: dbConfigSecretName},
-										Key:                  "port",
-									},
-								},
-							},
-							{
-								Name: "USER",
-								ValueFrom: &corev1.EnvVarSource{
-									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{Name: dbSecretName},
-										Key:                  "username",
-									},
-								},
-							},
-							{
-								Name: "PASSWORD",
-								ValueFrom: &corev1.EnvVarSource{
-									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{Name: dbSecretName},
-										Key:                  "password",
-									},
-								},
-							},
 						},
 						Resources: func() corev1.ResourceRequirements {
 							if instance.Spec.Resources != nil {
@@ -715,12 +833,12 @@ func (r *OdooInstanceReconciler) derivePhase(ctx context.Context, instance *bema
 		return bemadev1alpha1.OdooInstancePhaseStopped, nil
 	}
 
-	// 2–5. Job-driven phases (restore takes priority over upgrade).
-	activeRestore, failedRestore, err := r.getRestoreJobState(ctx, instance)
+	// 2–3. Job-driven phases (restore takes priority over upgrade).
+	activeRestore, _, err := r.getRestoreJobState(ctx, instance)
 	if err != nil {
 		return "", err
 	}
-	activeUpgrade, failedUpgrade, err := r.getUpgradeJobState(ctx, instance)
+	activeUpgrade, _, err := r.getUpgradeJobState(ctx, instance)
 	if err != nil {
 		return "", err
 	}
@@ -729,12 +847,6 @@ func (r *OdooInstanceReconciler) derivePhase(ctx context.Context, instance *bema
 	}
 	if activeUpgrade {
 		return bemadev1alpha1.OdooInstancePhaseUpgrading, nil
-	}
-	if failedRestore {
-		return bemadev1alpha1.OdooInstancePhaseRestoreFailed, nil
-	}
-	if failedUpgrade {
-		return bemadev1alpha1.OdooInstancePhaseUpgradeFailed, nil
 	}
 
 	// 6–8. Init-driven phases.
@@ -910,9 +1022,7 @@ func (r *OdooInstanceReconciler) patchPhase(ctx context.Context, instance *bemad
 func phaseEventType(phase bemadev1alpha1.OdooInstancePhase) string {
 	switch phase {
 	case bemadev1alpha1.OdooInstancePhaseError,
-		bemadev1alpha1.OdooInstancePhaseInitFailed,
-		bemadev1alpha1.OdooInstancePhaseRestoreFailed,
-		bemadev1alpha1.OdooInstancePhaseUpgradeFailed:
+		bemadev1alpha1.OdooInstancePhaseInitFailed:
 		return corev1.EventTypeWarning
 	default:
 		return corev1.EventTypeNormal
@@ -1015,14 +1125,18 @@ func generatePassword() string {
 // hash it on first write, but since the ConfigMap is read-only from the pod's
 // perspective it stays as-is. The value is already present in OdooInstance.spec
 // so this does not increase the attack surface.
-func buildOdooConf(username, adminPassword string, extra map[string]string) string {
+func buildOdooConf(username, password, adminPassword, dbHost string, dbPort int, dbName string, extra map[string]string) string {
 	options := map[string]string{
 		"data_dir":       "/var/lib/odoo",
 		"logfile":        "",
 		"log_level":      "info",
 		"proxy_mode":     "True",
 		"addons_path":    "/mnt/extra-addons",
+		"db_host":        dbHost,
+		"db_port":        fmt.Sprintf("%d", dbPort),
+		"db_name":        dbName,
 		"db_user":        username,
+		"db_password":    password,
 		"list_db":        "False",
 		"http_interface": "0.0.0.0",
 		"http_port":      "8069",
@@ -1033,13 +1147,22 @@ func buildOdooConf(username, adminPassword string, extra map[string]string) stri
 	for k, v := range extra {
 		options[k] = v
 	}
+	// Always prepend the standard Odoo Docker image addon paths so users
+	// only need to specify their custom paths in configOptions.addons_path.
+	stdAddons := "/opt/odoo/addons,/opt/odoo/odoo/addons"
+	if ap := options["addons_path"]; ap != "" {
+		options["addons_path"] = stdAddons + "," + ap
+	} else {
+		options["addons_path"] = stdAddons
+	}
 
 	var sb strings.Builder
 	sb.WriteString("[options]\n")
 	// Write standard keys in a stable order.
 	keys := []string{
 		"data_dir", "logfile", "log_level", "proxy_mode", "addons_path",
-		"db_user", "list_db", "http_interface", "http_port", "admin_passwd",
+		"db_host", "db_port", "db_name", "db_user", "db_password",
+		"list_db", "http_interface", "http_port", "admin_passwd",
 	}
 	written := map[string]bool{}
 	for _, k := range keys {
@@ -1048,10 +1171,16 @@ func buildOdooConf(username, adminPassword string, extra map[string]string) stri
 			written[k] = true
 		}
 	}
-	for k, v := range options {
+	// Sort remaining keys for deterministic output (prevents hash churn).
+	var extraKeys []string
+	for k := range options {
 		if !written[k] {
-			sb.WriteString(fmt.Sprintf("%s = %s\n", k, v))
+			extraKeys = append(extraKeys, k)
 		}
+	}
+	sort.Strings(extraKeys)
+	for _, k := range extraKeys {
+		sb.WriteString(fmt.Sprintf("%s = %s\n", k, options[k]))
 	}
 	return sb.String()
 }
@@ -1080,6 +1209,9 @@ func (r *OdooInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("odoo-operator")
 	if r.HTTPClient == nil {
 		r.HTTPClient = &http.Client{Timeout: 10 * time.Second}
+	}
+	if r.Postgres == nil {
+		r.Postgres = &pgxPostgresManager{}
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).

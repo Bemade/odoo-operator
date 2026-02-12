@@ -79,6 +79,10 @@ var _ = Describe("OdooUpgradeJob Controller", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+		// Patch status to Running so the upgrade job phase check allows it.
+		patch := client.MergeFrom(obj.DeepCopy())
+		obj.Status.Phase = bemadev1alpha1.OdooInstancePhaseRunning
+		Expect(k8sClient.Status().Patch(ctx, obj, patch)).To(Succeed())
 		return obj
 	}
 

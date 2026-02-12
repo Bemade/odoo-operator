@@ -20,11 +20,14 @@ with odoo-operator. If not, see <https://www.gnu.org/licenses/>.
 package controller
 
 import (
+	_ "embed"
+
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -41,59 +44,11 @@ import (
 	bemadev1alpha1 "github.com/bemade/odoo-operator/operator/api/v1alpha1"
 )
 
-// backupScript is the shell script run by the backup init container.
-// It creates the artifact at /mnt/backup and writes its final filename to
-// /mnt/backup/.artifact-name for the uploader container to consume.
-const backupScript = `
-set -ex
-export PGPASSWORD=$PASSWORD
-FILENAME="${INSTANCE_NAME}-$(date +%Y%m%d-%H%M%S)"
-TARGET="${LOCAL_FILENAME:-$FILENAME}"
+//go:embed scripts/backup.sh
+var backupScript string
 
-case "$BACKUP_FORMAT" in
-  zip)
-    case "$TARGET" in *.zip) ;; *) TARGET="$TARGET.zip" ;; esac
-    odoo db \
-      --db_host "$HOST" --db_port "$PORT" \
-      --db_user "$USER" --db_password "$PASSWORD" \
-      dump "$DB_NAME" "/mnt/backup/$TARGET"
-    ;;
-  dump)
-    case "$TARGET" in *.dump) ;; *) TARGET="$TARGET.dump" ;; esac
-    pg_dump -h "$HOST" -p "$PORT" -U "$USER" -d "$DB_NAME" \
-      --format=custom -f "/mnt/backup/$TARGET"
-    ;;
-  *)
-    case "$TARGET" in *.sql) ;; *) TARGET="$TARGET.sql" ;; esac
-    pg_dump -h "$HOST" -p "$PORT" -U "$USER" -d "$DB_NAME" \
-      > "/mnt/backup/$TARGET"
-    ;;
-esac
-
-echo "$TARGET" > /mnt/backup/.artifact-name
-ls -lh "/mnt/backup/$TARGET"
-`
-
-// uploadScript is the shell script run by the mc-based uploader container.
-const uploadScript = `
-set -ex
-MC_CONFIG_DIR="${MC_CONFIG_DIR:-/tmp/.mc}"
-mkdir -p "$MC_CONFIG_DIR"
-
-[ -f /mnt/backup/.artifact-name ] && LOCAL_FILENAME="$(cat /mnt/backup/.artifact-name)"
-FILE="/mnt/backup/${LOCAL_FILENAME}"
-DEST_KEY="${S3_KEY:-$LOCAL_FILENAME}"
-
-[ -f "$FILE" ] || { echo "artifact $FILE not found" >&2; exit 1; }
-[ -n "$S3_BUCKET" ] && [ -n "$S3_ENDPOINT" ] || { echo "S3 config missing" >&2; exit 1; }
-
-MC_INSECURE=""
-[ "${S3_INSECURE}" = "true" ] && MC_INSECURE="--insecure"
-
-mc $MC_INSECURE alias set dest "$S3_ENDPOINT" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY"
-mc $MC_INSECURE cp "$FILE" "dest/$S3_BUCKET/$DEST_KEY"
-echo "Upload complete: dest/$S3_BUCKET/$DEST_KEY"
-`
+//go:embed scripts/s3-upload.sh
+var uploadScript string
 
 // OdooBackupJobReconciler reconciles a OdooBackupJob object.
 type OdooBackupJobReconciler struct {
@@ -133,6 +88,21 @@ func (r *OdooBackupJobReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 func (r *OdooBackupJobReconciler) startJob(ctx context.Context, backupJob *bemadev1alpha1.OdooBackupJob) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Guard: if a Job already exists for this CR, adopt it instead of creating a duplicate.
+	existing, err := findOwnedJob(ctx, r.Client, backupJob.UID, backupJob.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if existing != nil {
+		log.Info("found existing job, adopting", "job", existing.Name)
+		patch := client.MergeFrom(backupJob.DeepCopy())
+		backupJob.Status.Phase = bemadev1alpha1.PhaseRunning
+		backupJob.Status.JobName = existing.Name
+		now := metav1.Now()
+		backupJob.Status.StartTime = &now
+		return ctrl.Result{}, r.Status().Patch(ctx, backupJob, patch)
+	}
+
 	instanceNS := backupJob.Spec.OdooInstanceRef.Namespace
 	if instanceNS == "" {
 		instanceNS = backupJob.Namespace
@@ -149,7 +119,7 @@ func (r *OdooBackupJobReconciler) startJob(ctx context.Context, backupJob *bemad
 
 	// Backup runs alongside the live instance — no scale-down needed.
 
-	job, err := r.buildBackupJob(backupJob, &odooInstance)
+	job, err := r.buildBackupJob(ctx, backupJob, &odooInstance)
 	if err != nil {
 		return r.setFailed(ctx, backupJob, fmt.Sprintf("failed to build job: %v", err))
 	}
@@ -193,7 +163,8 @@ func (r *OdooBackupJobReconciler) syncJobStatus(ctx context.Context, backupJob *
 		return ctrl.Result{}, r.finalise(ctx, backupJob, bemadev1alpha1.PhaseFailed, "backup job failed")
 	}
 
-	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	// Still running — Owns(&batchv1.Job{}) will trigger reconciliation on status change.
+	return ctrl.Result{}, nil
 }
 
 func (r *OdooBackupJobReconciler) finalise(ctx context.Context, backupJob *bemadev1alpha1.OdooBackupJob, phase bemadev1alpha1.Phase, message string) error {
@@ -220,7 +191,7 @@ func (r *OdooBackupJobReconciler) setFailed(ctx context.Context, backupJob *bema
 	return ctrl.Result{}, r.Status().Patch(ctx, backupJob, patch)
 }
 
-func (r *OdooBackupJobReconciler) buildBackupJob(backupJob *bemadev1alpha1.OdooBackupJob, odooInstance *bemadev1alpha1.OdooInstance) (*batchv1.Job, error) {
+func (r *OdooBackupJobReconciler) buildBackupJob(ctx context.Context, backupJob *bemadev1alpha1.OdooBackupJob, odooInstance *bemadev1alpha1.OdooInstance) (*batchv1.Job, error) {
 	instanceName := odooInstance.Name
 	instanceUID := string(odooInstance.UID)
 
@@ -234,14 +205,16 @@ func (r *OdooBackupJobReconciler) buildBackupJob(backupJob *bemadev1alpha1.OdooB
 		imagePullSecrets = []corev1.LocalObjectReference{{Name: odooInstance.Spec.ImagePullSecret}}
 	}
 
-	dbSecretName := fmt.Sprintf("%s-odoo-user", instanceName)
-	dbConfigSecretName := fmt.Sprintf("%s-db-config", instanceName)
+	odooConfName := fmt.Sprintf("%s-odoo-conf", instanceName)
 	dbName := fmt.Sprintf("odoo_%s", sanitiseUID(instanceUID))
 
-	dest := backupJob.Spec.Destination.S3
+	dest := backupJob.Spec.Destination
 	objectKey := dest.ObjectKey
-	if objectKey == "" {
-		objectKey = fmt.Sprintf("%s-backup", instanceName)
+	localFilename := ""
+	if objectKey != "" {
+		localFilename = filepath.Base(objectKey)
+	} else {
+		localFilename = fmt.Sprintf("%s-backup", instanceName)
 	}
 
 	format := string(backupJob.Spec.Format)
@@ -260,40 +233,40 @@ func (r *OdooBackupJobReconciler) buildBackupJob(backupJob *bemadev1alpha1.OdooB
 		{Name: "DB_NAME", Value: dbName},
 		{Name: "BACKUP_FORMAT", Value: format},
 		{Name: "BACKUP_WITH_FILESTORE", Value: withFilestore},
-		{Name: "LOCAL_FILENAME", Value: objectKey},
+		{Name: "LOCAL_FILENAME", Value: localFilename},
 		{
 			Name: "HOST",
 			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: dbConfigSecretName},
-					Key:                  "host",
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: odooConfName},
+					Key:                  "db_host",
 				},
 			},
 		},
 		{
 			Name: "PORT",
 			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: dbConfigSecretName},
-					Key:                  "port",
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: odooConfName},
+					Key:                  "db_port",
 				},
 			},
 		},
 		{
 			Name: "USER",
 			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: dbSecretName},
-					Key:                  "username",
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: odooConfName},
+					Key:                  "db_user",
 				},
 			},
 		},
 		{
 			Name: "PASSWORD",
 			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: dbSecretName},
-					Key:                  "password",
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: odooConfName},
+					Key:                  "db_password",
 				},
 			},
 		},
@@ -312,31 +285,18 @@ func (r *OdooBackupJobReconciler) buildBackupJob(backupJob *bemadev1alpha1.OdooB
 		{Name: "S3_INSECURE", Value: insecureVal},
 		{Name: "MC_CONFIG_DIR", Value: "/tmp/.mc"},
 	}
-	if dest.CredentialsSecretRef != nil {
-		credNS := dest.CredentialsSecretRef.Namespace
+	if dest.S3CredentialsSecretRef != nil {
+		credNS := dest.S3CredentialsSecretRef.Namespace
 		if credNS == "" {
 			credNS = backupJob.Namespace
 		}
-		credRef := corev1.SecretReference{Name: dest.CredentialsSecretRef.Name, Namespace: credNS}
+		accessKey, secretKey, err := readS3Credentials(ctx, r.Client, dest.S3CredentialsSecretRef.Name, credNS)
+		if err != nil {
+			return nil, fmt.Errorf("reading S3 credentials: %w", err)
+		}
 		uploadEnv = append(uploadEnv,
-			corev1.EnvVar{
-				Name: "AWS_ACCESS_KEY_ID",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: credRef.Name},
-						Key:                  "accessKey",
-					},
-				},
-			},
-			corev1.EnvVar{
-				Name: "AWS_SECRET_ACCESS_KEY",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: credRef.Name},
-						Key:                  "secretKey",
-					},
-				},
-			},
+			corev1.EnvVar{Name: "AWS_ACCESS_KEY_ID", Value: accessKey},
+			corev1.EnvVar{Name: "AWS_SECRET_ACCESS_KEY", Value: secretKey},
 		)
 	}
 
@@ -455,14 +415,17 @@ func (r *OdooBackupJobReconciler) notifyWebhook(ctx context.Context, backupJob *
 		}
 	}
 
-	payload, _ := json.Marshal(map[string]any{
-		"backupJob":      backupJob.Name,
-		"namespace":      backupJob.Namespace,
-		"phase":          phase,
-		"targetInstance": backupJob.Spec.OdooInstanceRef.Name,
-		"bucket":         backupJob.Spec.Destination.S3.Bucket,
-		"objectKey":      backupJob.Spec.Destination.S3.ObjectKey,
-	})
+	data := map[string]any{
+		"phase":   phase,
+		"jobName": backupJob.Status.JobName,
+	}
+	if backupJob.Status.Message != "" {
+		data["message"] = backupJob.Status.Message
+	}
+	if backupJob.Status.CompletionTime != nil {
+		data["completionTime"] = backupJob.Status.CompletionTime.UTC().Format("2006-01-02 15:04:05")
+	}
+	payload, _ := json.Marshal(data)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wh.URL, bytes.NewReader(payload))
 	if err != nil {

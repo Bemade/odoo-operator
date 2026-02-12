@@ -184,7 +184,7 @@ type OdooInstanceSpec struct {
 }
 
 // OdooInstancePhase represents the lifecycle state of an OdooInstance.
-// +kubebuilder:validation:Enum=Provisioning;Uninitialized;Initializing;InitFailed;Starting;Running;Degraded;Stopped;Upgrading;UpgradeFailed;Restoring;RestoreFailed;Error
+// +kubebuilder:validation:Enum=Provisioning;Uninitialized;Initializing;InitFailed;Starting;Running;Degraded;Stopped;Upgrading;Restoring;Error
 type OdooInstancePhase string
 
 const (
@@ -196,10 +196,8 @@ const (
 	OdooInstancePhaseRunning       OdooInstancePhase = "Running"
 	OdooInstancePhaseDegraded      OdooInstancePhase = "Degraded"
 	OdooInstancePhaseStopped       OdooInstancePhase = "Stopped"
-	OdooInstancePhaseUpgrading     OdooInstancePhase = "Upgrading"
-	OdooInstancePhaseUpgradeFailed OdooInstancePhase = "UpgradeFailed"
-	OdooInstancePhaseRestoring     OdooInstancePhase = "Restoring"
-	OdooInstancePhaseRestoreFailed OdooInstancePhase = "RestoreFailed"
+	OdooInstancePhaseUpgrading OdooInstancePhase = "Upgrading"
+	OdooInstancePhaseRestoring OdooInstancePhase = "Restoring"
 	OdooInstancePhaseError         OdooInstancePhase = "Error"
 )
 

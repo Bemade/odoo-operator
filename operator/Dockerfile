@@ -1,3 +1,4 @@
+# check=skip=CopyIgnoredFile
 # Build the manager binary
 FROM golang:1.25 AS builder
 ARG TARGETOS

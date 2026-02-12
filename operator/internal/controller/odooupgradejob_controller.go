@@ -88,6 +88,21 @@ func (r *OdooUpgradeJobReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 func (r *OdooUpgradeJobReconciler) startJob(ctx context.Context, upgradeJob *bemadev1alpha1.OdooUpgradeJob) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Guard: if a Job already exists for this CR, adopt it instead of creating a duplicate.
+	existing, err := findOwnedJob(ctx, r.Client, upgradeJob.UID, upgradeJob.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if existing != nil {
+		log.Info("found existing job, adopting", "job", existing.Name)
+		patch := client.MergeFrom(upgradeJob.DeepCopy())
+		upgradeJob.Status.Phase = bemadev1alpha1.PhaseRunning
+		upgradeJob.Status.JobName = existing.Name
+		now := metav1.Now()
+		upgradeJob.Status.StartTime = &now
+		return ctrl.Result{}, r.Status().Patch(ctx, upgradeJob, patch)
+	}
+
 	instanceNS := upgradeJob.Spec.OdooInstanceRef.Namespace
 	if instanceNS == "" {
 		instanceNS = upgradeJob.Namespace
@@ -102,6 +117,18 @@ func (r *OdooUpgradeJobReconciler) startJob(ctx context.Context, upgradeJob *bem
 		return ctrl.Result{}, err
 	}
 
+	// Requeue if the instance is not in a phase where upgrades can run.
+	switch odooInstance.Status.Phase {
+	case bemadev1alpha1.OdooInstancePhaseRunning,
+		bemadev1alpha1.OdooInstancePhaseStopped,
+		bemadev1alpha1.OdooInstancePhaseDegraded,
+		bemadev1alpha1.OdooInstancePhaseStarting:
+		// OK to proceed.
+	default:
+		log.Info("instance not ready for upgrade, requeuing", "instance", instanceName, "phase", odooInstance.Status.Phase)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
 	// Record original replicas so we can restore after completion.
 	originalReplicas := odooInstance.Spec.Replicas
 	if originalReplicas == 0 {
@@ -110,6 +137,11 @@ func (r *OdooUpgradeJobReconciler) startJob(ctx context.Context, upgradeJob *bem
 
 	if err := scaleDeployment(ctx, r.Client, instanceName, instanceNS, 0); err != nil {
 		log.Error(err, "failed to scale down deployment — proceeding anyway", "instance", instanceName)
+	}
+
+	// Mark the OdooInstance as Upgrading.
+	if err := patchInstancePhase(ctx, r.Client, instanceName, instanceNS, string(bemadev1alpha1.OdooInstancePhaseUpgrading)); err != nil {
+		log.Error(err, "failed to set instance phase to Upgrading")
 	}
 
 	job, err := r.buildUpgradeJob(upgradeJob, &odooInstance)
@@ -157,7 +189,8 @@ func (r *OdooUpgradeJobReconciler) syncJobStatus(ctx context.Context, upgradeJob
 		return ctrl.Result{}, r.finalise(ctx, upgradeJob, bemadev1alpha1.PhaseFailed, "upgrade job failed")
 	}
 
-	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	// Still running — Owns(&batchv1.Job{}) will trigger reconciliation on status change.
+	return ctrl.Result{}, nil
 }
 
 func (r *OdooUpgradeJobReconciler) finalise(ctx context.Context, upgradeJob *bemadev1alpha1.OdooUpgradeJob, phase bemadev1alpha1.Phase, message string) error {
@@ -178,6 +211,7 @@ func (r *OdooUpgradeJobReconciler) finalise(ctx context.Context, upgradeJob *bem
 	if replicas == 0 {
 		replicas = 1
 	}
+	// Always scale back up after upgrade (success or failure) — the DB is still intact.
 	if err := scaleDeployment(ctx, r.Client, upgradeJob.Spec.OdooInstanceRef.Name, instanceNS, replicas); err != nil {
 		logf.FromContext(ctx).Error(err, "failed to scale instance back up")
 	}
@@ -210,7 +244,6 @@ func (r *OdooUpgradeJobReconciler) buildUpgradeJob(upgradeJob *bemadev1alpha1.Od
 		imagePullSecrets = []corev1.LocalObjectReference{{Name: odooInstance.Spec.ImagePullSecret}}
 	}
 
-	dbSecretName := fmt.Sprintf("%s-odoo-user", instanceName)
 	dbName := fmt.Sprintf("odoo_%s", sanitiseUID(instanceUID))
 
 	// Build -u and -i argument lists.
@@ -272,30 +305,10 @@ func (r *OdooUpgradeJobReconciler) buildUpgradeJob(upgradeJob *bemadev1alpha1.Od
 					},
 					Containers: []corev1.Container{
 						{
-							Name:    "upgrade",
+							Name:    "odoo-upgrade",
 							Image:   image,
 							Command: []string{"/entrypoint.sh", "odoo"},
 							Args:    args,
-							Env: []corev1.EnvVar{
-								{
-									Name: "USER",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: dbSecretName},
-											Key:                  "username",
-										},
-									},
-								},
-								{
-									Name: "PASSWORD",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: dbSecretName},
-											Key:                  "password",
-										},
-									},
-								},
-							},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "filestore", MountPath: "/var/lib/odoo"},
 								{Name: "odoo-conf", MountPath: "/etc/odoo"},
@@ -328,14 +341,17 @@ func (r *OdooUpgradeJobReconciler) notifyWebhook(ctx context.Context, upgradeJob
 		}
 	}
 
-	payload, _ := json.Marshal(map[string]any{
-		"upgradeJob":     upgradeJob.Name,
-		"namespace":      upgradeJob.Namespace,
-		"phase":          phase,
-		"targetInstance": upgradeJob.Spec.OdooInstanceRef.Name,
-		"modules":        upgradeJob.Spec.Modules,
-		"modulesInstall": upgradeJob.Spec.ModulesInstall,
-	})
+	data := map[string]any{
+		"phase":   phase,
+		"jobName": upgradeJob.Status.JobName,
+	}
+	if upgradeJob.Status.Message != "" {
+		data["message"] = upgradeJob.Status.Message
+	}
+	if upgradeJob.Status.CompletionTime != nil {
+		data["completionTime"] = upgradeJob.Status.CompletionTime.UTC().Format("2006-01-02 15:04:05")
+	}
+	payload, _ := json.Marshal(data)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wh.URL, bytes.NewReader(payload))
 	if err != nil {

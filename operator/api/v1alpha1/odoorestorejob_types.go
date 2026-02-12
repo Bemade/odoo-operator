@@ -20,7 +20,6 @@ with odoo-operator. If not, see <https://www.gnu.org/licenses/>.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -41,12 +40,10 @@ type OdooLiveSource struct {
 	URL string `json:"url"`
 
 	// sourceDatabase is the name of the database to download from the source.
-	// +optional
 	SourceDatabase string `json:"sourceDatabase,omitempty"`
 
-	// masterPasswordSecretRef references a Secret whose key contains the Odoo master password.
-	// +optional
-	MasterPasswordSecretRef *corev1.SecretKeySelector `json:"masterPasswordSecretRef,omitempty"`
+	// masterPassword is the Odoo master (admin) password of the source instance.
+	MasterPassword string `json:"masterPassword,omitempty"`
 }
 
 // RestoreSource defines where to download the backup artifact from.

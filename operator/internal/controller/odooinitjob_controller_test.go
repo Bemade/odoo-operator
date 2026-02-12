@@ -90,6 +90,10 @@ var _ = Describe("OdooInitJob Controller", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+		// Patch status to Uninitialized so the init job phase check allows it.
+		patch := client.MergeFrom(obj.DeepCopy())
+		obj.Status.Phase = bemadev1alpha1.OdooInstancePhaseUninitialized
+		Expect(k8sClient.Status().Patch(ctx, obj, patch)).To(Succeed())
 		return obj
 	}
 

@@ -91,11 +91,9 @@ var _ = Describe("OdooBackupJob Controller", func() {
 			Spec: bemadev1alpha1.OdooBackupJobSpec{
 				OdooInstanceRef: bemadev1alpha1.OdooInstanceRef{Name: iName},
 				Destination: bemadev1alpha1.BackupDestination{
-					S3: bemadev1alpha1.S3Config{
-						Bucket:    "test-bucket",
-						ObjectKey: "backups/test.zip",
-						Endpoint:  "https://s3.example.com",
-					},
+					Bucket:    "test-bucket",
+					ObjectKey: "backups/test.zip",
+					Endpoint:  "https://s3.example.com",
 				},
 				Format:        bemadev1alpha1.BackupFormatZip,
 				WithFilestore: true,

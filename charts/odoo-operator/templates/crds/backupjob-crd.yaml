@@ -58,48 +58,41 @@ spec:
               destination:
                 description: destination specifies where the backup artifact is uploaded.
                 properties:
-                  s3:
-                    description: s3 configures upload to an S3-compatible object store.
+                  bucket:
+                    description: bucket is the S3 bucket name.
+                    type: string
+                  endpoint:
+                    description: endpoint is the S3-compatible endpoint URL (e.g.
+                      "https://s3.example.com").
+                    type: string
+                  insecure:
+                    default: false
+                    description: insecure disables TLS certificate verification.
+                    type: boolean
+                  objectKey:
+                    description: objectKey is the object key (path) within the bucket.
+                    type: string
+                  region:
+                    description: region is the optional S3 region.
+                    type: string
+                  s3CredentialsSecretRef:
+                    description: s3CredentialsSecretRef references a Secret with accessKey
+                      and secretKey fields.
                     properties:
-                      bucket:
-                        description: bucket is the S3 bucket name.
+                      name:
+                        description: name is unique within a namespace to reference
+                          a secret resource.
                         type: string
-                      credentialsSecretRef:
-                        description: credentialsSecretRef references a Secret with
-                          accessKey and secretKey fields.
-                        properties:
-                          name:
-                            description: name is unique within a namespace to reference
-                              a secret resource.
-                            type: string
-                          namespace:
-                            description: namespace defines the space within which
-                              the secret name must be unique.
-                            type: string
-                        type: object
-                        x-kubernetes-map-type: atomic
-                      endpoint:
-                        description: endpoint is the S3-compatible endpoint URL (e.g.
-                          "https://s3.example.com").
+                      namespace:
+                        description: namespace defines the space within which the
+                          secret name must be unique.
                         type: string
-                      insecure:
-                        default: false
-                        description: insecure disables TLS certificate verification.
-                        type: boolean
-                      objectKey:
-                        description: objectKey is the object key (path) within the
-                          bucket.
-                        type: string
-                      region:
-                        description: region is the optional S3 region.
-                        type: string
-                    required:
-                    - bucket
-                    - endpoint
-                    - objectKey
                     type: object
+                    x-kubernetes-map-type: atomic
                 required:
-                - s3
+                - bucket
+                - endpoint
+                - objectKey
                 type: object
               format:
                 default: zip

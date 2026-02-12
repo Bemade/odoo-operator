@@ -9,3 +9,6 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Re-include embedded shell scripts (used by go:embed)
+!internal/controller/scripts/*.sh

@@ -1150,20 +1150,6 @@ spec:
                     - RollingUpdate
                     type: string
                 type: object
-              sync:
-                description: sync configures periodic git repository synchronisation.
-                properties:
-                  enabled:
-                    default: false
-                    description: |-
-                      enabled triggers a sync operation when set to true.
-                      The controller resets it to false after sync completes.
-                    type: boolean
-                  time:
-                    description: time is the scheduled time for the next sync operation.
-                    format: date-time
-                    type: string
-                type: object
               tolerations:
                 description: |-
                   tolerations define tolerations for the Odoo pod.
@@ -1313,9 +1299,7 @@ spec:
                 - Degraded
                 - Stopped
                 - Upgrading
-                - UpgradeFailed
                 - Restoring
-                - RestoreFailed
                 - Error
                 type: string
               ready:
@@ -1324,6 +1308,12 @@ spec:
                 type: boolean
               readyReplicas:
                 description: readyReplicas is the number of Odoo pods currently ready.
+                format: int32
+                type: integer
+              targetReplicas:
+                description: |-
+                  targetReplicas is the last spec.replicas value observed by the controller.
+                  Used to detect user-initiated scale operations and emit ScaleRequested events.
                 format: int32
                 type: integer
               url:

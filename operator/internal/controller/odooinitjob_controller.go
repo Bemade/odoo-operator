@@ -88,6 +88,21 @@ func (r *OdooInitJobReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *OdooInitJobReconciler) startJob(ctx context.Context, initJob *bemadev1alpha1.OdooInitJob) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Guard: if a Job already exists for this CR, adopt it instead of creating a duplicate.
+	existing, err := findOwnedJob(ctx, r.Client, initJob.UID, initJob.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if existing != nil {
+		log.Info("found existing job, adopting", "job", existing.Name)
+		patch := client.MergeFrom(initJob.DeepCopy())
+		initJob.Status.Phase = bemadev1alpha1.PhaseRunning
+		initJob.Status.JobName = existing.Name
+		now := metav1.Now()
+		initJob.Status.StartTime = &now
+		return ctrl.Result{}, r.Status().Patch(ctx, initJob, patch)
+	}
+
 	instanceNS := initJob.Spec.OdooInstanceRef.Namespace
 	if instanceNS == "" {
 		instanceNS = initJob.Namespace
@@ -100,6 +115,17 @@ func (r *OdooInitJobReconciler) startJob(ctx context.Context, initJob *bemadev1a
 			return r.setFailed(ctx, initJob, fmt.Sprintf("OdooInstance %s not found", instanceName))
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Requeue if the instance is not in a phase where initialization can run.
+	switch odooInstance.Status.Phase {
+	case bemadev1alpha1.OdooInstancePhaseUninitialized,
+		bemadev1alpha1.OdooInstancePhaseInitFailed,
+		bemadev1alpha1.OdooInstancePhaseStarting:
+		// OK to proceed.
+	default:
+		log.Info("instance not ready for init, requeuing", "instance", instanceName, "phase", odooInstance.Status.Phase)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// Scale the deployment to 0 before initialising
@@ -153,13 +179,14 @@ func (r *OdooInitJobReconciler) syncJobStatus(ctx context.Context, initJob *bema
 		return ctrl.Result{}, r.finalise(ctx, initJob, bemadev1alpha1.PhaseFailed, "init job failed")
 	}
 
-	// Still running — the Owns() watch will trigger reconciliation when it
-	// completes, but requeue as a safety net
-	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	// Still running — Owns(&batchv1.Job{}) will trigger reconciliation on status change.
+	return ctrl.Result{}, nil
 }
 
-// finalise sets a terminal status, scales the instance back up, and fires the webhook.
+// finalise sets a terminal status, optionally scales the instance back up, and fires the webhook.
 func (r *OdooInitJobReconciler) finalise(ctx context.Context, initJob *bemadev1alpha1.OdooInitJob, phase bemadev1alpha1.Phase, message string) error {
+	log := logf.FromContext(ctx)
+
 	patch := client.MergeFrom(initJob.DeepCopy())
 	initJob.Status.Phase = phase
 	initJob.Status.Message = message
@@ -173,8 +200,15 @@ func (r *OdooInitJobReconciler) finalise(ctx context.Context, initJob *bemadev1a
 	if instanceNS == "" {
 		instanceNS = initJob.Namespace
 	}
-	if err := r.scaleInstanceBackUp(ctx, initJob.Spec.OdooInstanceRef.Name, instanceNS); err != nil {
-		logf.FromContext(ctx).Error(err, "failed to scale instance back up")
+	instanceName := initJob.Spec.OdooInstanceRef.Name
+
+	if phase == bemadev1alpha1.PhaseCompleted {
+		if err := r.scaleInstanceBackUp(ctx, instanceName, instanceNS); err != nil {
+			log.Error(err, "failed to scale instance back up")
+		}
+	} else {
+		// Init failed: DB may not exist, leave the instance stopped.
+		log.Info("init failed, leaving instance stopped", "instance", instanceName)
 	}
 
 	if initJob.Spec.Webhook != nil {
@@ -207,7 +241,6 @@ func (r *OdooInitJobReconciler) buildInitJob(initJob *bemadev1alpha1.OdooInitJob
 		imagePullSecrets = []corev1.LocalObjectReference{{Name: odooInstance.Spec.ImagePullSecret}}
 	}
 
-	dbSecretName := fmt.Sprintf("%s-odoo-user", instanceName)
 	dbName := fmt.Sprintf("odoo_%s", sanitiseUID(instanceUID))
 
 	modules := initJob.Spec.Modules
@@ -262,26 +295,6 @@ func (r *OdooInitJobReconciler) buildInitJob(initJob *bemadev1alpha1.OdooInitJob
 							Image:   image,
 							Command: []string{"/entrypoint.sh", "odoo"},
 							Args:    []string{"-i", strings.Join(modules, ","), "-d", dbName, "--no-http", "--stop-after-init"},
-							Env: []corev1.EnvVar{
-								{
-									Name: "USER",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: dbSecretName},
-											Key:                  "username",
-										},
-									},
-								},
-								{
-									Name: "PASSWORD",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: dbSecretName},
-											Key:                  "password",
-										},
-									},
-								},
-							},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "filestore", MountPath: "/var/lib/odoo"},
 								{Name: "odoo-conf", MountPath: "/etc/odoo"},
@@ -328,13 +341,17 @@ func (r *OdooInitJobReconciler) notifyWebhook(ctx context.Context, initJob *bema
 		}
 	}
 
-	payload, _ := json.Marshal(map[string]any{
-		"initJob":        initJob.Name,
-		"namespace":      initJob.Namespace,
-		"phase":          phase,
-		"targetInstance": initJob.Spec.OdooInstanceRef.Name,
-		"modules":        initJob.Spec.Modules,
-	})
+	data := map[string]any{
+		"phase":   phase,
+		"jobName": initJob.Status.JobName,
+	}
+	if initJob.Status.Message != "" {
+		data["message"] = initJob.Status.Message
+	}
+	if initJob.Status.CompletionTime != nil {
+		data["completionTime"] = initJob.Status.CompletionTime.UTC().Format("2006-01-02 15:04:05")
+	}
+	payload, _ := json.Marshal(data)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wh.URL, bytes.NewReader(payload))
 	if err != nil {
