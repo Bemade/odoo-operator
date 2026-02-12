@@ -379,7 +379,7 @@ func (r *OdooRestoreJobReconciler) buildRestoreJob(restoreJob *bemadev1alpha1.Od
 	}
 
 	initContainers = append(initContainers, corev1.Container{
-		Name:    "restore",
+		Name:    "importer",
 		Image:   image,
 		Command: []string{"/bin/sh", "-c", restoreScript},
 		Env:     dbEnv,
@@ -441,7 +441,7 @@ func (r *OdooRestoreJobReconciler) buildRestoreJob(restoreJob *bemadev1alpha1.Od
 					// Sentinel container: exits immediately once all init containers succeed.
 					Containers: []corev1.Container{
 						{
-							Name:    "done",
+							Name:    "complete",
 							Image:   "busybox:latest",
 							Command: []string{"/bin/sh", "-c", "echo restore complete"},
 						},

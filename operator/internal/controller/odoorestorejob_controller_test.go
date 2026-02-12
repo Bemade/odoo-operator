@@ -186,9 +186,9 @@ var _ = Describe("OdooRestoreJob Controller", func() {
 			job := getChildJob(updated.Status.JobName)
 			Expect(job.Spec.Template.Spec.InitContainers).To(HaveLen(2))
 			Expect(job.Spec.Template.Spec.InitContainers[0].Name).To(Equal("downloader"))
-			Expect(job.Spec.Template.Spec.InitContainers[1].Name).To(Equal("restore"))
+			Expect(job.Spec.Template.Spec.InitContainers[1].Name).To(Equal("importer"))
 			// Sentinel main container
-			Expect(job.Spec.Template.Spec.Containers[0].Name).To(Equal("done"))
+			Expect(job.Spec.Template.Spec.Containers[0].Name).To(Equal("complete"))
 		})
 
 		It("uses only a restore init container when source type is not S3", func() {
@@ -207,7 +207,7 @@ var _ = Describe("OdooRestoreJob Controller", func() {
 			job := getChildJob(updated.Status.JobName)
 			// Only the restore init container — no downloader for Odoo live source
 			Expect(job.Spec.Template.Spec.InitContainers).To(HaveLen(1))
-			Expect(job.Spec.Template.Spec.InitContainers[0].Name).To(Equal("restore"))
+			Expect(job.Spec.Template.Spec.InitContainers[0].Name).To(Equal("importer"))
 		})
 
 		It("sets the OdooRestoreJob as owner of the child Job", func() {
