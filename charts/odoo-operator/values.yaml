@@ -5,8 +5,7 @@
 # Operator deployment configuration
 operator:
   # Operator container image (include the tag, e.g. registry.bemade.org/bemade/odoo-operator:v0.12.0)
-  image: registry.bemade.org/bemade/odoo-operator:latest
-
+  image: ghcr.io/bemade/odoo-operator
   # Resource limits and requests for the operator
   resources:
     requests:
