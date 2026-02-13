@@ -1,6 +1,4 @@
-venv
-.venv
-__pycache__
-.vscode
-.idea
-.coverage
+/target
+/crds
+*.swp
+*.swo

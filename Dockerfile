@@ -1,12 +1,34 @@
-FROM python:3.12-slim
+# ── Build stage ────────────────────────────────────────────────────────────────
+FROM rust:1.88-bookworm AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+WORKDIR /workspace
 
-WORKDIR /app
+# Cache dependency build: copy manifests first, create dummy src, build deps.
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src/bin && \
+    echo 'fn main() {}' > src/bin/crdgen.rs && \
+    echo 'fn main() {}' > src/main.rs && \
+    echo '' > src/lib.rs && \
+    cargo build --release 2>/dev/null || true && \
+    rm -rf src \
+          target/release/deps/odoo_operator* target/release/deps/libodoo_operator* \
+          target/release/odoo-operator target/release/odoo_operator* \
+          target/release/.fingerprint/odoo-operator-*
 
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+# Copy real source + scripts.
+COPY src/ src/
+COPY scripts/ scripts/
+COPY tests/ tests/
 
-COPY src ./src
+# Build the operator binary.
+RUN cargo build --release --bin odoo-operator
 
-CMD ["uv", "run", "kopf", "run", "src/operator.py", "--verbose", "--all-namespaces"]
+# ── Runtime stage ─────────────────────────────────────────────────────────────
+FROM gcr.io/distroless/cc-debian12:nonroot
+
+WORKDIR /
+COPY --from=builder /workspace/target/release/odoo-operator /manager
+
+USER 65532:65532
+
+ENTRYPOINT ["/manager"]

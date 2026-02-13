@@ -6,10 +6,9 @@ metadata:
   labels:
     app: {{ .Release.Name }}
 spec:
-  ports:
-    - port: 443
-      targetPort: webhook
-      protocol: TCP
-      name: https
   selector:
     app: {{ .Release.Name }}
+  ports:
+    - name: webhook
+      port: 443
+      targetPort: 9443
