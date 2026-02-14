@@ -85,6 +85,7 @@ pub fn build_init_job(
     init_job: &OdooInitJob,
 ) -> Job {
     OdooJobBuilder::new(&format!("{cr_name}-"), ns, init_job, instance)
+        .active_deadline(3600)
         .containers(vec![Container {
             name: "init".to_string(),
             image: Some(image.to_string()),

@@ -14,6 +14,7 @@ mod child_resources;
 mod degraded;
 mod finalizer;
 mod init_job;
+mod orphaned_jobs;
 mod restore_job;
 mod scaling;
 mod upgrade_job;
