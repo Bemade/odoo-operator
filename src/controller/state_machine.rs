@@ -765,9 +765,7 @@ pub static TRANSITIONS: &[Transition] = &[
     Transition {
         from: BackingUp,
         to: Starting,
-        guard: |i, s| {
-            s.backup_job == Absent && s.ready_replicas == 0 && i.spec.replicas > 0
-        },
+        guard: |i, s| s.backup_job == Absent && s.ready_replicas == 0 && i.spec.replicas > 0,
         guard_name: "backup absent && ready == 0",
         actions: &[],
     },
