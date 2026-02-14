@@ -29,34 +29,46 @@ use crate::error::Result;
 use super::helpers::FIELD_MANAGER;
 use super::odoo_instance::Context;
 
+// ── JobStatus ────────────────────────────────────────────────────────────────
+
+/// Observed status of a job CR + its underlying batch/v1 Job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobStatus {
+    /// No active CR for this job type (none exists, or all are Completed/Failed).
+    Absent,
+    /// An active CR exists but the K8s Job hasn't finished yet.
+    Active,
+    /// The K8s Job succeeded.
+    Succeeded,
+    /// The K8s Job failed (or was deleted / is being deleted).
+    Failed,
+}
+
+impl JobStatus {
+    /// True when a CR is present and not yet finalised (Active, Succeeded, or Failed).
+    pub fn is_present(self) -> bool {
+        self != Self::Absent
+    }
+}
+
 // ── ReconcileSnapshot ───────────────────────────────────────────────────────
 
 /// A point-in-time snapshot of the observed world, gathered once per reconcile.
 /// Guards are pure functions over the summary fields.
-/// State ensure() methods use the full CRD objects to read specs.
+/// State ensure() methods use the full CR objects to read specs.
 pub struct ReconcileSnapshot {
     // ── Deployment ────────────────────────────────────────────────────────
     pub ready_replicas: i32,
     pub deployment_replicas: i32,
     pub db_initialized: bool,
 
-    // ── Job CRD presence (is there an active CRD for this job type?) ─────
-    pub init_job_active: bool,
-    pub restore_job_active: bool,
-    pub upgrade_job_active: bool,
-    pub backup_job_active: bool,
+    // ── Job CR status (combines presence + K8s Job outcome) ──────────────
+    pub init_job: JobStatus,
+    pub restore_job: JobStatus,
+    pub upgrade_job: JobStatus,
+    pub backup_job: JobStatus,
 
-    // ── K8s batch/v1 Job outcomes (from the actual Job, not the CRD) ─────
-    pub init_job_succeeded: bool,
-    pub init_job_failed: bool,
-    pub restore_job_succeeded: bool,
-    pub restore_job_failed: bool,
-    pub upgrade_job_succeeded: bool,
-    pub upgrade_job_failed: bool,
-    pub backup_job_succeeded: bool,
-    pub backup_job_failed: bool,
-
-    // ── Active job CRD objects (for ensure() to read specs) ───────────────
+    // ── Active job CR objects (for ensure() to read specs) ────────────────
     pub active_init_job: Option<OdooInitJob>,
     pub active_restore_job: Option<OdooRestoreJob>,
     pub active_upgrade_job: Option<OdooUpgradeJob>,
@@ -188,10 +200,10 @@ impl ReconcileSnapshot {
             }
         }
 
-        // ── K8s Job outcomes ────────────────────────────────────────────
-        // For each active CRD that has a jobName, look up the actual batch/v1
-        // Job and check its succeeded/failed counts.
-        let (init_job_succeeded, init_job_failed) = job_outcome(
+        // ── Resolve job statuses ─────────────────────────────────────────
+        // Combine CR presence with K8s Job outcome into a single enum.
+        let init_job = resolve_job_status(
+            init_job_active,
             &jobs_api,
             active_init_job
                 .as_ref()
@@ -199,7 +211,8 @@ impl ReconcileSnapshot {
                 .and_then(|s| s.job_name.as_deref()),
         )
         .await;
-        let (restore_job_succeeded, restore_job_failed) = job_outcome(
+        let restore_job = resolve_job_status(
+            restore_job_active,
             &jobs_api,
             active_restore_job
                 .as_ref()
@@ -207,7 +220,8 @@ impl ReconcileSnapshot {
                 .and_then(|s| s.job_name.as_deref()),
         )
         .await;
-        let (upgrade_job_succeeded, upgrade_job_failed) = job_outcome(
+        let upgrade_job = resolve_job_status(
+            upgrade_job_active,
             &jobs_api,
             active_upgrade_job
                 .as_ref()
@@ -215,7 +229,8 @@ impl ReconcileSnapshot {
                 .and_then(|s| s.job_name.as_deref()),
         )
         .await;
-        let (backup_job_succeeded, backup_job_failed) = job_outcome(
+        let backup_job = resolve_job_status(
+            backup_job_active,
             &jobs_api,
             active_backup_job
                 .as_ref()
@@ -228,18 +243,10 @@ impl ReconcileSnapshot {
             ready_replicas,
             deployment_replicas,
             db_initialized: db_init_from_jobs,
-            init_job_active,
-            restore_job_active,
-            upgrade_job_active,
-            backup_job_active,
-            init_job_succeeded,
-            init_job_failed,
-            restore_job_succeeded,
-            restore_job_failed,
-            upgrade_job_succeeded,
-            upgrade_job_failed,
-            backup_job_succeeded,
-            backup_job_failed,
+            init_job,
+            restore_job,
+            upgrade_job,
+            backup_job,
             active_init_job,
             active_restore_job,
             active_upgrade_job,
@@ -248,25 +255,50 @@ impl ReconcileSnapshot {
     }
 }
 
-/// Look up a batch/v1 Job by name and return (succeeded, failed).
-async fn job_outcome(jobs_api: &Api<Job>, job_name: Option<&str>) -> (bool, bool) {
+/// Combine CR presence with the K8s batch/v1 Job outcome.
+///
+/// If no CR is active, returns `Absent`.  Otherwise looks up the K8s Job:
+/// - succeeded > 0 → `Succeeded`
+/// - failed > 0, or Job has deletionTimestamp, or Job is 404 → `Failed`
+/// - Job not yet created (no jobName) or transient API error → `Active`
+async fn resolve_job_status(
+    cr_active: bool,
+    jobs_api: &Api<Job>,
+    job_name: Option<&str>,
+) -> JobStatus {
+    if !cr_active {
+        return JobStatus::Absent;
+    }
     let Some(name) = job_name else {
-        return (false, false);
+        return JobStatus::Active;
     };
     match jobs_api.get(name).await {
         Ok(job) => {
             let succeeded = job.status.as_ref().and_then(|s| s.succeeded).unwrap_or(0) > 0;
             let failed = job.status.as_ref().and_then(|s| s.failed).unwrap_or(0) > 0;
-            (succeeded, failed)
+            if succeeded {
+                JobStatus::Succeeded
+            } else if failed {
+                JobStatus::Failed
+            } else if job.metadata.deletion_timestamp.is_some() {
+                tracing::warn!(%name, "batch/v1 Job has deletionTimestamp — treating as failed");
+                JobStatus::Failed
+            } else {
+                JobStatus::Active
+            }
         }
-        Err(_) => (false, false),
+        Err(kube::Error::Api(ref err)) if err.code == 404 => {
+            tracing::warn!(%name, "batch/v1 Job not found — treating as failed");
+            JobStatus::Failed
+        }
+        Err(_) => JobStatus::Active,
     }
 }
 
 // ── Transition actions ──────────────────────────────────────────────────────
 
 /// One-shot actions that fire on specific edges (the "/" in UML state diagrams).
-/// These handle CRD status patching, events, and webhooks that belong to the
+/// These handle CR status patching, events, and webhooks that belong to the
 /// *transition*, not to the state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionAction {
@@ -445,6 +477,7 @@ pub struct Transition {
     pub actions: &'static [TransitionAction],
 }
 
+use JobStatus::*;
 use OdooInstancePhase::*;
 
 /// The complete lifecycle transition table.  First matching guard wins.
@@ -472,24 +505,24 @@ pub static TRANSITIONS: &[Transition] = &[
     Transition {
         from: Uninitialized,
         to: Initializing,
-        guard: |_, s| s.init_job_active,
-        guard_name: "init_job_active",
+        guard: |_, s| s.init_job.is_present(),
+        guard_name: "init_job present",
         actions: &[],
     },
     // A restore can also bring us out of Uninitialized.
     Transition {
         from: Uninitialized,
         to: Restoring,
-        guard: |_, s| s.restore_job_active,
-        guard_name: "restore_job_active",
+        guard: |_, s| s.restore_job.is_present(),
+        guard_name: "restore_job present",
         actions: &[],
     },
     // ── Initializing ────────────────────────────────────────
     Transition {
         from: Initializing,
         to: Starting,
-        guard: |_, s| s.init_job_succeeded,
-        guard_name: "init_job_succeeded",
+        guard: |_, s| s.init_job == Succeeded,
+        guard_name: "init_job succeeded",
         actions: &[
             TransitionAction::CompleteInitJob,
             TransitionAction::MarkDbInitialized,
@@ -498,25 +531,33 @@ pub static TRANSITIONS: &[Transition] = &[
     Transition {
         from: Initializing,
         to: InitFailed,
-        guard: |_, s| s.init_job_failed,
-        guard_name: "init_job_failed",
+        guard: |_, s| s.init_job == Failed,
+        guard_name: "init_job failed",
         actions: &[TransitionAction::FailInitJob],
+    },
+    // Orphaned: init job CR deleted while in Initializing.
+    Transition {
+        from: Initializing,
+        to: Uninitialized,
+        guard: |_, s| s.init_job == Absent,
+        guard_name: "init_job absent",
+        actions: &[],
     },
     // ── InitFailed ──────────────────────────────────────────
     // A new init job can retry.
     Transition {
         from: InitFailed,
         to: Initializing,
-        guard: |_, s| s.init_job_active,
-        guard_name: "init_job_active",
+        guard: |_, s| s.init_job.is_present(),
+        guard_name: "init_job present",
         actions: &[],
     },
     // A restore can also recover from InitFailed.
     Transition {
         from: InitFailed,
         to: Restoring,
-        guard: |_, s| s.restore_job_active,
-        guard_name: "restore_job_active",
+        guard: |_, s| s.restore_job.is_present(),
+        guard_name: "restore_job present",
         actions: &[],
     },
     // ── Starting ────────────────────────────────────────────
@@ -530,22 +571,22 @@ pub static TRANSITIONS: &[Transition] = &[
     Transition {
         from: Starting,
         to: Restoring,
-        guard: |_, s| s.restore_job_active,
-        guard_name: "restore_job_active",
+        guard: |_, s| s.restore_job.is_present(),
+        guard_name: "restore_job present",
         actions: &[],
     },
     Transition {
         from: Starting,
         to: Upgrading,
-        guard: |_, s| s.upgrade_job_active,
-        guard_name: "upgrade_job_active",
+        guard: |_, s| s.upgrade_job.is_present(),
+        guard_name: "upgrade_job present",
         actions: &[],
     },
     Transition {
         from: Starting,
         to: BackingUp,
-        guard: |_, s| s.backup_job_active,
-        guard_name: "backup_job_active",
+        guard: |_, s| s.backup_job.is_present(),
+        guard_name: "backup_job present",
         actions: &[],
     },
     Transition {
@@ -566,22 +607,22 @@ pub static TRANSITIONS: &[Transition] = &[
     Transition {
         from: Running,
         to: Restoring,
-        guard: |_, s| s.restore_job_active,
-        guard_name: "restore_job_active",
+        guard: |_, s| s.restore_job.is_present(),
+        guard_name: "restore_job present",
         actions: &[],
     },
     Transition {
         from: Running,
         to: Upgrading,
-        guard: |_, s| s.upgrade_job_active,
-        guard_name: "upgrade_job_active",
+        guard: |_, s| s.upgrade_job.is_present(),
+        guard_name: "upgrade_job present",
         actions: &[],
     },
     Transition {
         from: Running,
         to: BackingUp,
-        guard: |_, s| s.backup_job_active,
-        guard_name: "backup_job_active",
+        guard: |_, s| s.backup_job.is_present(),
+        guard_name: "backup_job present",
         actions: &[],
     },
     Transition {
@@ -609,22 +650,22 @@ pub static TRANSITIONS: &[Transition] = &[
     Transition {
         from: Degraded,
         to: Restoring,
-        guard: |_, s| s.restore_job_active,
-        guard_name: "restore_job_active",
+        guard: |_, s| s.restore_job.is_present(),
+        guard_name: "restore_job present",
         actions: &[],
     },
     Transition {
         from: Degraded,
         to: Upgrading,
-        guard: |_, s| s.upgrade_job_active,
-        guard_name: "upgrade_job_active",
+        guard: |_, s| s.upgrade_job.is_present(),
+        guard_name: "upgrade_job present",
         actions: &[],
     },
     Transition {
         from: Degraded,
         to: BackingUp,
-        guard: |_, s| s.backup_job_active,
-        guard_name: "backup_job_active",
+        guard: |_, s| s.backup_job.is_present(),
+        guard_name: "backup_job present",
         actions: &[],
     },
     Transition {
@@ -645,84 +686,127 @@ pub static TRANSITIONS: &[Transition] = &[
     Transition {
         from: BackingUp,
         to: Stopped,
-        guard: |i, s| s.backup_job_succeeded && i.spec.replicas == 0,
-        guard_name: "backup_succeeded && replicas == 0",
+        guard: |i, s| s.backup_job == Succeeded && i.spec.replicas == 0,
+        guard_name: "backup succeeded && replicas == 0",
         actions: &[TransitionAction::CompleteBackupJob],
     },
     Transition {
         from: BackingUp,
         to: Stopped,
-        guard: |i, s| s.backup_job_failed && i.spec.replicas == 0,
-        guard_name: "backup_failed && replicas == 0",
+        guard: |i, s| s.backup_job == Failed && i.spec.replicas == 0,
+        guard_name: "backup failed && replicas == 0",
         actions: &[TransitionAction::FailBackupJob],
     },
     Transition {
         from: BackingUp,
         to: Running,
-        guard: |i, s| s.backup_job_succeeded && s.ready_replicas >= i.spec.replicas,
-        guard_name: "backup_succeeded && ready >= desired",
+        guard: |i, s| s.backup_job == Succeeded && s.ready_replicas >= i.spec.replicas,
+        guard_name: "backup succeeded && ready >= desired",
         actions: &[TransitionAction::CompleteBackupJob],
     },
     Transition {
         from: BackingUp,
         to: Running,
-        guard: |i, s| s.backup_job_failed && s.ready_replicas >= i.spec.replicas,
-        guard_name: "backup_failed && ready >= desired",
+        guard: |i, s| s.backup_job == Failed && s.ready_replicas >= i.spec.replicas,
+        guard_name: "backup failed && ready >= desired",
         actions: &[TransitionAction::FailBackupJob],
     },
     Transition {
         from: BackingUp,
         to: Degraded,
         guard: |i, s| {
-            s.backup_job_succeeded && s.ready_replicas > 0 && s.ready_replicas < i.spec.replicas
+            s.backup_job == Succeeded && s.ready_replicas > 0 && s.ready_replicas < i.spec.replicas
         },
-        guard_name: "backup_succeeded && 0 < ready < desired",
+        guard_name: "backup succeeded && 0 < ready < desired",
         actions: &[TransitionAction::CompleteBackupJob],
     },
     Transition {
         from: BackingUp,
         to: Degraded,
         guard: |i, s| {
-            s.backup_job_failed && s.ready_replicas > 0 && s.ready_replicas < i.spec.replicas
+            s.backup_job == Failed && s.ready_replicas > 0 && s.ready_replicas < i.spec.replicas
         },
-        guard_name: "backup_failed && 0 < ready < desired",
+        guard_name: "backup failed && 0 < ready < desired",
         actions: &[TransitionAction::FailBackupJob],
     },
     Transition {
         from: BackingUp,
         to: Starting,
-        guard: |i, s| s.backup_job_succeeded && s.ready_replicas == 0 && i.spec.replicas > 0,
-        guard_name: "backup_succeeded && ready == 0",
+        guard: |i, s| s.backup_job == Succeeded && s.ready_replicas == 0 && i.spec.replicas > 0,
+        guard_name: "backup succeeded && ready == 0",
         actions: &[TransitionAction::CompleteBackupJob],
     },
     Transition {
         from: BackingUp,
         to: Starting,
-        guard: |i, s| s.backup_job_failed && s.ready_replicas == 0 && i.spec.replicas > 0,
-        guard_name: "backup_failed && ready == 0",
+        guard: |i, s| s.backup_job == Failed && s.ready_replicas == 0 && i.spec.replicas > 0,
+        guard_name: "backup failed && ready == 0",
         actions: &[TransitionAction::FailBackupJob],
+    },
+    // Orphaned: backup job CR deleted while in BackingUp.
+    Transition {
+        from: BackingUp,
+        to: Running,
+        guard: |i, s| {
+            s.backup_job == Absent && s.ready_replicas >= i.spec.replicas && i.spec.replicas > 0
+        },
+        guard_name: "backup absent && ready >= desired",
+        actions: &[],
+    },
+    Transition {
+        from: BackingUp,
+        to: Degraded,
+        guard: |i, s| {
+            s.backup_job == Absent && s.ready_replicas > 0 && s.ready_replicas < i.spec.replicas
+        },
+        guard_name: "backup absent && 0 < ready < desired",
+        actions: &[],
+    },
+    Transition {
+        from: BackingUp,
+        to: Starting,
+        guard: |i, s| {
+            s.backup_job == Absent && s.ready_replicas == 0 && i.spec.replicas > 0
+        },
+        guard_name: "backup absent && ready == 0",
+        actions: &[],
+    },
+    Transition {
+        from: BackingUp,
+        to: Stopped,
+        guard: |i, s| s.backup_job == Absent && i.spec.replicas == 0,
+        guard_name: "backup absent && replicas == 0",
+        actions: &[],
     },
     // ── Upgrading ───────────────────────────────────────────
     Transition {
         from: Upgrading,
         to: Starting,
-        guard: |_, s| s.upgrade_job_succeeded,
-        guard_name: "upgrade_job_succeeded",
+        guard: |_, s| s.upgrade_job == Succeeded,
+        guard_name: "upgrade_job succeeded",
         actions: &[TransitionAction::CompleteUpgradeJob],
     },
     Transition {
         from: Upgrading,
         to: Starting,
-        guard: |_, s| s.upgrade_job_failed,
-        guard_name: "upgrade_job_failed",
+        guard: |_, s| s.upgrade_job == Failed,
+        guard_name: "upgrade_job failed",
         actions: &[TransitionAction::FailUpgradeJob],
+    },
+    // Orphaned: upgrade job CR deleted while in Upgrading.
+    Transition {
+        from: Upgrading,
+        to: Starting,
+        guard: |_, s| s.upgrade_job == Absent,
+        guard_name: "upgrade_job absent",
+        actions: &[],
     },
     // ── Restoring ───────────────────────────────────────────
     Transition {
         from: Restoring,
         to: Starting,
-        guard: |_, s| s.restore_job_succeeded,
-        guard_name: "restore_job_succeeded",
+        guard: |_, s| s.restore_job == Succeeded,
+        guard_name: "restore_job succeeded",
         actions: &[
             TransitionAction::CompleteRestoreJob,
             TransitionAction::MarkDbInitialized,
@@ -731,23 +815,31 @@ pub static TRANSITIONS: &[Transition] = &[
     Transition {
         from: Restoring,
         to: Starting,
-        guard: |_, s| s.restore_job_failed,
-        guard_name: "restore_job_failed",
+        guard: |_, s| s.restore_job == Failed,
+        guard_name: "restore_job failed",
         actions: &[TransitionAction::FailRestoreJob],
+    },
+    // Orphaned: restore job CR deleted while in Restoring.
+    Transition {
+        from: Restoring,
+        to: Starting,
+        guard: |_, s| s.restore_job == Absent,
+        guard_name: "restore_job absent",
+        actions: &[],
     },
     // ── Stopped ─────────────────────────────────────────────
     Transition {
         from: Stopped,
         to: Restoring,
-        guard: |_, s| s.restore_job_active,
-        guard_name: "restore_job_active",
+        guard: |_, s| s.restore_job.is_present(),
+        guard_name: "restore_job present",
         actions: &[],
     },
     Transition {
         from: Stopped,
         to: Upgrading,
-        guard: |_, s| s.upgrade_job_active,
-        guard_name: "upgrade_job_active",
+        guard: |_, s| s.upgrade_job.is_present(),
+        guard_name: "upgrade_job present",
         actions: &[],
     },
     Transition {

@@ -16,4 +16,5 @@ mod finalizer;
 mod init_job;
 mod restore_job;
 mod scaling;
+mod orphaned_jobs;
 mod upgrade_job;
