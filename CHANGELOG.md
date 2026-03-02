@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/bemade/odoo-operator/compare/v0.14.0...v1.0.0) (2026-03-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* OdooInstances now auto-initialize by default. Set
+
+### Features
+
+* auto-initialize OdooInstance database by default ([#34](https://github.com/bemade/odoo-operator/issues/34)) ([3bdb9b9](https://github.com/bemade/odoo-operator/commit/3bdb9b9aedd81d0f8eb1636821d6b7f821f40951))
+
 ## [0.14.0](https://github.com/bemade/odoo-operator/compare/v0.13.12...v0.14.0) (2026-03-02)
 
 
