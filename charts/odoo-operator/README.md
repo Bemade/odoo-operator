@@ -44,7 +44,7 @@ helm install odoo-operator ./odoo-operator \
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `operator.image` | Operator container image | `registry.bemade.org/bemade/odoo-operator` |
+| `operator.image` | Operator container image | `ghcr.io/bemade/odoo-operator` |
 | `operator.resources.requests.cpu` | CPU request | `50m` |
 | `operator.resources.requests.memory` | Memory request | `64Mi` |
 | `operator.resources.limits.cpu` | CPU limit | `250m` |
@@ -128,7 +128,7 @@ These defaults apply to new OdooInstance resources:
 
 ```yaml
 operator:
-  image: registry.bemade.org/bemade/odoo-operator
+  image: ghcr.io/bemade/odoo-operator
   resources:
     requests:
       cpu: 100m
@@ -146,7 +146,7 @@ postgresClustersSecretRef:
   name: "postgres-clusters"
 
 defaults:
-  odooImage: registry.bemade.org/bemade/odoo:18.0
+  odooImage: odoo:18.0
   storageClass: "longhorn"
   resources:
     requests:
@@ -159,14 +159,15 @@ defaults:
 
 ## Custom Resource Definitions
 
-This chart installs three CRDs:
+This chart installs five CRDs:
 
 ### OdooInstance
 
-Defines an Odoo deployment with all its configuration.
+Defines an Odoo deployment with all its configuration. The database is
+automatically initialized on creation (set `init.enabled: false` to skip).
 
 ```yaml
-apiVersion: bemade.org/v1
+apiVersion: bemade.org/v1alpha1
 kind: OdooInstance
 metadata:
   name: my-odoo
@@ -180,6 +181,41 @@ spec:
     issuer: letsencrypt-prod
   database:
     cluster: main  # Optional: specify which PostgreSQL cluster to use
+    name: my-odoo  # Optional: custom database name (defaults to odoo_<uid>)
+```
+
+### OdooInitJob
+
+Initializes a fresh database. Automatically created when `spec.init.enabled` is
+true (the default), but can also be created manually.
+
+```yaml
+apiVersion: bemade.org/v1alpha1
+kind: OdooInitJob
+metadata:
+  name: init-my-odoo
+spec:
+  odooInstanceRef:
+    name: my-odoo
+  modules:
+    - base
+    - sale
+```
+
+### OdooUpgradeJob
+
+Runs `odoo -u` against an existing database, then rolls the deployment.
+
+```yaml
+apiVersion: bemade.org/v1alpha1
+kind: OdooUpgradeJob
+metadata:
+  name: upgrade-my-odoo
+spec:
+  odooInstanceRef:
+    name: my-odoo
+  modules:
+    - all
 ```
 
 ### OdooBackupJob
@@ -187,7 +223,7 @@ spec:
 Triggers a backup to S3-compatible storage.
 
 ```yaml
-apiVersion: bemade.org/v1
+apiVersion: bemade.org/v1alpha1
 kind: OdooBackupJob
 metadata:
   name: backup-my-odoo
@@ -208,7 +244,7 @@ spec:
 Restores a backup to an OdooInstance.
 
 ```yaml
-apiVersion: bemade.org/v1
+apiVersion: bemade.org/v1alpha1
 kind: OdooRestoreJob
 metadata:
   name: restore-my-odoo
@@ -276,6 +312,8 @@ To also remove CRDs (this will delete all OdooInstance resources!):
 
 ```bash
 kubectl delete crd odooinstances.bemade.org
+kubectl delete crd odooinitjobs.bemade.org
+kubectl delete crd odooupgradejobs.bemade.org
 kubectl delete crd odoobackupjobs.bemade.org
 kubectl delete crd odoorestorejobs.bemade.org
 ```
