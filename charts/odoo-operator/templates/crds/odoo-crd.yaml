@@ -604,6 +604,9 @@ spec:
                   cluster:
                     nullable: true
                     type: string
+                  name:
+                    nullable: true
+                    type: string
                 type: object
               filestore:
                 description: FilestoreSpec defines persistent storage for the Odoo filestore.

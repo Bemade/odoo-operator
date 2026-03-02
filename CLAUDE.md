@@ -56,7 +56,7 @@ Failed) and the underlying Job name.
 ## Naming Conventions
 
 - PostgreSQL user: `odoo.{namespace}.{instance_name}`
-- Database name: `odoo_{sanitized_uid}`
+- Database name: `spec.database.name` if set, else `odoo_{sanitized_uid}`
 - Cron deployment: `{instance_name}-cron` (helper: `cron_depl_name()`)
 - ConfigMap: `{instance_name}-odoo-conf`
 - PVC: `{instance_name}-filestore-pvc`

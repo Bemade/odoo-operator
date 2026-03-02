@@ -27,9 +27,12 @@ pub struct FilestoreSpec {
 
 /// DatabaseSpec identifies which PostgreSQL cluster to use for this instance.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct DatabaseSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// DeploymentStrategyType specifies the update strategy for the Odoo Deployment.

@@ -1,5 +1,9 @@
 //! Unit tests for helper functions.
 
+use kube::api::ObjectMeta;
+use odoo_operator::crd::odoo_instance::{
+    CronSpec, DatabaseSpec, IngressSpec, OdooInstance, OdooInstanceSpec,
+};
 use odoo_operator::helpers::*;
 
 #[test]
@@ -95,4 +99,54 @@ fn test_build_odoo_conf_prepends_standard_addons_path() {
 fn test_build_odoo_conf_empty_admin_password_omitted() {
     let conf = build_odoo_conf("u", "p", "", "h", 5432, "d", &None);
     assert!(!conf.contains("admin_passwd"));
+}
+
+// ── db_name ─────────────────────────────────────────────────────────────────
+
+fn make_instance(uid: Option<&str>, db_name: Option<&str>) -> OdooInstance {
+    OdooInstance {
+        metadata: ObjectMeta {
+            name: Some("test".to_string()),
+            namespace: Some("default".to_string()),
+            uid: uid.map(|s| s.to_string()),
+            ..Default::default()
+        },
+        spec: OdooInstanceSpec {
+            image: None,
+            image_pull_secret: None,
+            admin_password: "admin".to_string(),
+            replicas: 1,
+            cron: CronSpec::default(),
+            ingress: IngressSpec {
+                hosts: vec!["test.example.com".to_string()],
+                issuer: None,
+                class: None,
+            },
+            resources: None,
+            filestore: None,
+            config_options: None,
+            database: db_name.map(|n| DatabaseSpec {
+                cluster: None,
+                name: Some(n.to_string()),
+            }),
+            strategy: None,
+            webhook: None,
+            probes: None,
+            affinity: None,
+            tolerations: vec![],
+        },
+        status: None,
+    }
+}
+
+#[test]
+fn test_db_name_falls_back_to_uid() {
+    let inst = make_instance(Some("abc-123-def"), None);
+    assert_eq!(db_name(&inst), "odoo_abc_123_def");
+}
+
+#[test]
+fn test_db_name_uses_custom_name() {
+    let inst = make_instance(Some("abc-123-def"), Some("my_custom_db"));
+    assert_eq!(db_name(&inst), "my_custom_db");
 }

@@ -42,8 +42,7 @@ impl State for Initializing {
                 .is_none()
             {
                 let image = instance.spec.image.as_deref().unwrap_or("odoo:18.0");
-                let uid = instance.metadata.uid.as_deref().unwrap_or("unknown");
-                let db = format!("odoo_{}", crate::helpers::sanitise_uid(uid));
+                let db = crate::helpers::db_name(instance);
                 let modules = if init_job.spec.modules.is_empty() {
                     vec!["base".to_string()]
                 } else {
