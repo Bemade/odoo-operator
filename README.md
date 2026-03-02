@@ -78,19 +78,11 @@ spec:
 
 ```sh
 kubectl apply -f odoo.yaml
-
-# Initialize the database
-kubectl apply -f - <<EOF
-apiVersion: bemade.org/v1alpha1
-kind: OdooInitJob
-metadata:
-  name: myodoo-init
-  namespace: odoo
-spec:
-  odooInstanceRef:
-    name: myodoo
-EOF
 ```
+
+By default, the operator automatically initializes the database with the `base`
+module. To skip auto-init (e.g. when restoring from a backup), set
+`spec.init.enabled: false`.
 
 ## Configuration Reference
 
@@ -106,6 +98,10 @@ EOF
 | `ingress.issuer` | operator default | cert-manager ClusterIssuer for TLS |
 | `ingress.class` | operator default | IngressClass name |
 | `database.cluster` | secret default | Postgres cluster name from the pg-clusters secret |
+| `database.name` | auto-generated | Database name. Defaults to `odoo_<uid>` if unset |
+| `init.enabled` | `true` | Automatically initialize the database when the instance is first created |
+| `init.modules` | `["base"]` | Odoo modules to install during auto-initialization |
+| `init.webhook` | — | Webhook to notify on init job status changes |
 | `filestore.storageSize` | `2Gi` | PVC size. Can only be increased, not decreased |
 | `filestore.storageClass` | operator default | StorageClass for the filestore PVC. Immutable after creation |
 | `resources` | operator default | CPU/memory requests and limits for web pods |
