@@ -14,7 +14,6 @@ use tracing::info;
 use crate::crd::odoo_backup_job::OdooBackupJob;
 use crate::crd::odoo_instance::OdooInstance;
 use crate::error::Result;
-use crate::helpers::sanitise_uid;
 use crate::notify;
 
 use super::{Context, ReconcileSnapshot, State};
@@ -58,8 +57,7 @@ impl State for BackingUp {
         let client = &ctx.client;
         let instance_name = instance.name_any();
         let image = instance.spec.image.as_deref().unwrap_or("odoo:18.0");
-        let uid = instance.metadata.uid.as_deref().unwrap_or("unknown");
-        let db = format!("odoo_{}", sanitise_uid(uid));
+        let db = crate::helpers::db_name(instance);
         let odoo_conf_name = format!("{instance_name}-odoo-conf");
 
         let dest = &backup_job.spec.destination;

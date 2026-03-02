@@ -5,16 +5,14 @@ use kube::runtime::events::EventType;
 use serde_json::json;
 use tracing::info;
 
-use crate::crd::odoo_instance::OdooInstance;
-use crate::crd::odoo_upgrade_job::OdooUpgradeJob;
-use crate::error::Result;
-use crate::helpers::sanitise_uid;
-
 use super::{Context, ReconcileSnapshot, State};
 use crate::controller::helpers::{
     cron_depl_name, odoo_volume_mounts, OdooJobBuilder, FIELD_MANAGER,
 };
 use crate::controller::state_machine::scale_deployment;
+use crate::crd::odoo_instance::OdooInstance;
+use crate::crd::odoo_upgrade_job::OdooUpgradeJob;
+use crate::error::Result;
 
 /// Upgrading: upgrade job running, deployment must be down.
 ///
@@ -53,8 +51,7 @@ impl State for Upgrading {
         let crd_name = upgrade_job.name_any();
         let client = &ctx.client;
         let image = instance.spec.image.as_deref().unwrap_or("odoo:18.0");
-        let uid = instance.metadata.uid.as_deref().unwrap_or("unknown");
-        let db = format!("odoo_{}", sanitise_uid(uid));
+        let db = crate::helpers::db_name(instance);
 
         let mut args = vec![
             "-d".to_string(),

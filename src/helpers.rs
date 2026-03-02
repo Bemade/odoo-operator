@@ -50,8 +50,19 @@ pub fn sanitise_uid(uid: &str) -> String {
         .collect()
 }
 
-/// Derive the database name from the instance UID.
+/// Derive the database name from the instance spec or UID.
+///
+/// If `spec.database.name` is set, returns that value directly.
+/// Otherwise falls back to `odoo_{sanitized_uid}`.
 pub fn db_name(instance: &OdooInstance) -> String {
+    if let Some(custom) = instance
+        .spec
+        .database
+        .as_ref()
+        .and_then(|d| d.name.as_deref())
+    {
+        return custom.to_string();
+    }
     let uid = instance.metadata.uid.as_deref().unwrap_or("unknown");
     format!("odoo_{}", sanitise_uid(uid))
 }

@@ -164,6 +164,57 @@ fn parse_quantity(s: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kube::core::admission::AdmissionRequest;
+
+    fn make_instance_json(db_name: Option<&str>, cluster: Option<&str>) -> serde_json::Value {
+        let mut db = serde_json::Map::new();
+        if let Some(n) = db_name {
+            db.insert("name".into(), serde_json::json!(n));
+        }
+        if let Some(c) = cluster {
+            db.insert("cluster".into(), serde_json::json!(c));
+        }
+        let mut spec = serde_json::json!({
+            "adminPassword": "admin",
+            "ingress": { "hosts": ["test.example.com"] }
+        });
+        if !db.is_empty() {
+            spec["database"] = serde_json::Value::Object(db);
+        }
+        serde_json::json!({
+            "apiVersion": "bemade.org/v1alpha1",
+            "kind": "OdooInstance",
+            "metadata": { "name": "test", "namespace": "default", "uid": "test-uid" },
+            "spec": spec
+        })
+    }
+
+    fn make_update_request(
+        old_db_name: Option<&str>,
+        old_cluster: Option<&str>,
+        new_db_name: Option<&str>,
+        new_cluster: Option<&str>,
+    ) -> AdmissionRequest<OdooInstance> {
+        let review: serde_json::Value = serde_json::json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "req-1",
+                "kind": { "group": "bemade.org", "version": "v1alpha1", "kind": "OdooInstance" },
+                "resource": { "group": "bemade.org", "version": "v1alpha1", "resource": "odooinstances" },
+                "name": "test",
+                "namespace": "default",
+                "operation": "UPDATE",
+                "userInfo": { "username": "test" },
+                "object": make_instance_json(new_db_name, new_cluster),
+                "oldObject": make_instance_json(old_db_name, old_cluster),
+                "dryRun": false,
+            }
+        });
+        let ar: kube::core::admission::AdmissionReview<OdooInstance> =
+            serde_json::from_value(review).expect("valid AdmissionReview");
+        ar.try_into().expect("valid AdmissionRequest")
+    }
 
     #[test]
     fn test_parse_quantity() {
@@ -188,8 +239,15 @@ mod tests {
 
     #[test]
     fn test_validate_allows_normal_update() {
-        // Validation logic is tested via compare_quantities and the field checks.
-        // Full AdmissionRequest testing requires constructing the review objects,
-        // which is better done as an integration test.
+        let req = make_update_request(Some("mydb"), None, Some("mydb"), None);
+        let resp = validate(req);
+        assert!(resp.allowed);
+    }
+
+    #[test]
+    fn test_validate_rejects_cluster_change() {
+        let req = make_update_request(None, Some("pg-cluster-a"), None, Some("pg-cluster-b"));
+        let resp = validate(req);
+        assert!(!resp.allowed);
     }
 }
