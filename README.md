@@ -95,8 +95,10 @@ module. To skip auto-init (e.g. when restoring from a backup), set
 | `adminPassword` | — | Odoo master password |
 | `imagePullSecret` | — | Name of a `kubernetes.io/dockerconfigjson` secret in the operator namespace (auto-copied to instance namespace) |
 | `ingress.hosts` | — | Hostnames to expose the instance on |
-| `ingress.issuer` | operator default | cert-manager ClusterIssuer for TLS |
+| `ingress.issuer` | operator default | cert-manager ClusterIssuer for TLS (ignored when `gatewayRef` is set) |
 | `ingress.class` | operator default | IngressClass name |
+| `ingress.gatewayRef.name` | operator default | Gateway name for HTTPRoute (creates HTTPRoute instead of Ingress) |
+| `ingress.gatewayRef.namespace` | operator default | Gateway namespace for HTTPRoute |
 | `database.cluster` | secret default | Postgres cluster name from the pg-clusters secret |
 | `database.name` | auto-generated | Database name. Defaults to `odoo_<uid>` if unset |
 | `init.enabled` | `true` | Automatically initialize the database when the instance is first created |
@@ -135,6 +137,34 @@ stale connections.
 You don't need to set `workers` or `max_cron_threads` in `configOptions` — the
 operator handles this automatically via the command-line flags on each deployment.
 
+### Gateway API Support
+
+By default the operator creates a `networking.v1/Ingress` for each instance. If your
+cluster uses Istio or another Gateway API implementation, set `ingress.gatewayRef` to
+create an `HTTPRoute` instead:
+
+```yaml
+spec:
+  ingress:
+    hosts:
+      - myodoo.example.com
+    gatewayRef:
+      name: my-gateway
+      namespace: istio-system
+```
+
+TLS is not managed by the operator in Gateway API mode — configure it on your Gateway
+resource (wildcard cert, cert-manager Gateway integration, etc.). The `issuer` field is
+ignored when `gatewayRef` is set.
+
+To make all instances use Gateway API by default, set the operator-level defaults:
+
+```sh
+helm upgrade odoo-operator ... \
+  --set defaults.gatewayRefName=my-gateway \
+  --set defaults.gatewayRefNamespace=istio-system
+```
+
 ### Status conditions
 
 The operator sets standard Kubernetes conditions on each OdooInstance:
@@ -161,6 +191,8 @@ The validating webhook rejects:
 | `--default-storage-size` | `2Gi` | PVC size when `spec.filestore.storageSize` is unset |
 | `--default-ingress-class` | — | IngressClass when `spec.ingress.class` is unset |
 | `--default-ingress-issuer` | — | ClusterIssuer when `spec.ingress.issuer` is unset |
+| `--default-gateway-ref-name` | — | Gateway name; when both name and namespace are set, creates HTTPRoute instead of Ingress |
+| `--default-gateway-ref-namespace` | — | Gateway namespace for the default HTTPRoute parentRef |
 | `--default-resources` | — | JSON `ResourceRequirements` when `spec.resources` is unset |
 | `--default-affinity` | — | JSON `Affinity` when `spec.affinity` is unset |
 | `--default-tolerations` | — | JSON `[]Toleration` when `spec.tolerations` is unset |

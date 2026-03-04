@@ -9,7 +9,7 @@ This chart deploys:
 - Custom Resource Definitions (CRDs) for OdooInstance, OdooBackupJob, and OdooRestoreJob
 - RBAC resources (ServiceAccount, ClusterRole, ClusterRoleBinding)
 - ConfigMaps for operator configuration
-- Standard Kubernetes Ingress support
+- Standard Kubernetes Ingress support (or Gateway API HTTPRoute)
 
 ## Prerequisites
 
@@ -123,6 +123,8 @@ These defaults apply to new OdooInstance resources:
 | `defaults.affinity` | Default pod affinity | `{}` |
 | `defaults.tolerations` | Default pod tolerations | `[]` |
 | `defaults.ingressClass` | Default ingress class for created Ingresses (optional) | *(unset; cluster default)* |
+| `defaults.gatewayRefName` | Default Gateway name for HTTPRoute parentRef | *(unset)* |
+| `defaults.gatewayRefNamespace` | Default Gateway namespace for HTTPRoute parentRef | *(unset)* |
 
 ## Example values.yaml
 
