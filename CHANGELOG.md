@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/bemade/odoo-operator/compare/v1.1.0...v1.1.1) (2026-03-12)
+
+
+### Bug Fixes
+
+* add grace period to cron liveness probe to prevent crash loop ([#38](https://github.com/bemade/odoo-operator/issues/38)) ([17489a4](https://github.com/bemade/odoo-operator/commit/17489a4f3c5f2cc07adfc5681498eab6e658ea88))
+
 ## [1.1.0](https://github.com/bemade/odoo-operator/compare/v1.0.0...v1.1.0) (2026-03-04)
 
 
