@@ -18,23 +18,28 @@ echo "=== Starting restore process ==="
 echo "Target database: $DB_NAME"
 echo "Neutralize: $NEUTRALIZE"
 
+# Drop the target database unconditionally using SQL catalog check.
+# We cannot rely on `odoo db drop` or `odoo db load -f` because they use
+# exp_db_exist() which tries to *connect* to the database. An "invalid"
+# database (e.g. from a previously interrupted CREATE DATABASE) exists in
+# pg_database but refuses connections, so exp_db_exist returns False and
+# the drop is silently skipped. DROP DATABASE IF EXISTS works on the catalog
+# directly and handles both valid and invalid databases.
+echo "=== Dropping existing database if present ==="
+psql -h "$HOST" -p "$PORT" -U "$USER" -d postgres \
+  -c "DROP DATABASE IF EXISTS \"$DB_NAME\"" || true
+
 echo "Backup directory contents:"
 ls -lh /mnt/backup/
 
 if [ -f /mnt/backup/dump.dump ]; then
     echo "Found dump.dump — using pg_restore method"
-    echo "=== Dropping existing database if present ==="
-    odoo db --db_host "$HOST" --db_port "$PORT" --db_user "$USER" --db_password "$PASSWORD" \
-      drop "$DB_NAME" || true
     createdb -h "$HOST" -p "$PORT" -U "$USER" "$DB_NAME"
     # pg_restore may emit warnings (ownership, sequences) but still succeed; || true guards that.
     pg_restore -h "$HOST" -p "$PORT" -U "$USER" -d "$DB_NAME" --no-owner /mnt/backup/dump.dump || true
 
 elif [ -f /mnt/backup/dump.sql ]; then
     echo "Found dump.sql — using psql method"
-    echo "=== Dropping existing database if present ==="
-    odoo db --db_host "$HOST" --db_port "$PORT" --db_user "$USER" --db_password "$PASSWORD" \
-      drop "$DB_NAME" || true
     createdb -h "$HOST" -p "$PORT" -U "$USER" "$DB_NAME"
     # psql may emit non-fatal errors; || true guards that.
     psql -h "$HOST" -p "$PORT" -U "$USER" -d "$DB_NAME" -f /mnt/backup/dump.sql || true
@@ -44,16 +49,26 @@ elif [ -f /mnt/backup/backup.zip ]; then
     ls -lh /mnt/backup/backup.zip
     NEUTRALIZE_FLAG=""
     [ "$NEUTRALIZE" = "True" ] && NEUTRALIZE_FLAG="-n"
-    # -f makes odoo db load drop-and-recreate internally; no pre-drop needed here.
-    # Pre-dropping would cause a pooler race condition (exp_db_exist stale cache → double drop).
     odoo db --db_host "$HOST" --db_port "$PORT" --db_user "$USER" --db_password "$PASSWORD" \
-      load $NEUTRALIZE_FLAG -f "$DB_NAME" /mnt/backup/backup.zip || true
+      load $NEUTRALIZE_FLAG "$DB_NAME" /mnt/backup/backup.zip
 
 else
     echo "ERROR: No backup file found in /mnt/backup/"
     ls -la /mnt/backup/
     exit 1
 fi
+
+# Verify the restore actually produced a working database.
+# pg_restore/odoo-db-load exit codes are unreliable (non-zero on harmless
+# ownership warnings), so we use || true above and validate here instead.
+echo "=== Verifying restore integrity ==="
+if ! odoo --stop-after-init -d "$DB_NAME" \
+  --db_host "$HOST" --db_port "$PORT" --db_user "$USER" --db_password "$PASSWORD" \
+  -c /etc/odoo/odoo.conf --no-http; then
+    echo "FATAL: restore verification failed — database is broken"
+    exit 1
+fi
+echo "Restore verification passed"
 
 reinit_db_params() {
     echo "=== Re-initializing database parameters ==="
